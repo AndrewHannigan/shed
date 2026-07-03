@@ -637,6 +637,39 @@ The README's "why not `git worktree`" rationale is re-scoped, not reversed:
 it argued from user work, pushing, and independent teardown — all true of
 workspaces, none true of repos.
 
+## Alternative considered: no mirror at all (two tiers)
+
+The recurring simplification instinct: drop mirrors, make each repo an
+ordinary clone, and `git clone <repo-path>` for workspaces. For workspaces
+on arbitrary branches this requires giving repos the mirror refspec
+(`+refs/heads/*:refs/heads/*` — a plain clone only exposes its own local
+branches to `clone --branch`), i.e. each repo becomes a non-bare mirror
+wearing a checkout. Scored against the requirements:
+
+- **Req 13 fails**: every branch-tracked repo of one upstream fetches the
+  network independently — N fetches where the mirror does one.
+- **Req 12 fails**: repos advance by *fetching*, and fetch copies — the
+  incremental-duplication problem returns in full (~churn × years × N
+  advancing checkouts), along with the gc/privatization dilemma it drags in.
+- **Req 10 strained**: repo gc breaks workspace hardlinks (disk shock) or
+  demands `.keep` bookkeeping — the rejected detour, resurrected.
+
+Meanwhile most of the hardening survives unchanged: the detach-repair pass
+(an agent's `git checkout main` still poisons the repo's own fetch), push
+rejection (non-bare repos accept pushes to non-checked-out branches; the
+half-created-workspace deletion race is identical), tag-clobber refspec,
+LFS, index.lock, empty-upstream, crash-atomic creation. Only the
+worktree-specific spec (core.bare relocation, worktreeConfig, zombie
+ordering) disappears — roughly a fifth of the hardening, paid for by
+re-importing the duplication problem and surfacing thousands of mirror
+branches in a user-facing `git branch`.
+
+Verdict: the mirror is the load-bearing mechanism for requirements 4, 6,
+12, and 13 simultaneously, and is itself the cheap part (a bare clone plus
+a fetch). The expensive-looking parts of this design are the price of
+agents running arbitrary git next to shared state — which no tier count
+changes.
+
 ## No migration
 
 shed is unreleased; the new layout lands as *the* layout in one change.
