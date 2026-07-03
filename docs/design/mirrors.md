@@ -24,6 +24,71 @@ The end state:
 - Sync does one network fetch per upstream, no matter how many checkouts
   derive from it.
 
+## Requirements, as the user
+
+Written user-first, mechanism-free. Each maps to the design section that
+satisfies it (in parentheses).
+
+**Reading code**
+
+1. I can read any repo I track without cloning or pulling anything myself —
+   there is always a browsable copy on my machine. (repos)
+2. If I track a **branch**, my copy has the latest changes after every
+   sync; I never run `git pull` and it is never behind by more than one
+   sync interval. (sync flow)
+3. If I track a **tag**, my copy never changes — a tag is a permanent
+   pointer, and my checkout behaves like one. (track semantics)
+4. I can keep several versions of the same repo side by side — e.g.
+   Airflow `main` and Airflow 2.7 — each independently referenceable by me
+   and by agents. (multi-checkout, `@` naming)
+5. When I `cd` into a copy and ask git where I am, the answer names the
+   branch or tag I'm tracking, not just a hash. (browsing UX)
+
+**Writing code**
+
+6. Agents can create a workspace instantly, without touching the network —
+   including fully offline (from the last sync). (workspace creation)
+7. A workspace is a completely ordinary git repo: normal branching,
+   committing, pushing to the real upstream, and its removal is trivial.
+   (hardlink clones, `remote set-url`)
+8. Nothing shed ever does in the background — sync, gc, prune — can
+   corrupt, delete, or silently lose work sitting in a workspace. Ever.
+   (sharing-mechanism-per-tier rule, pre-receive hook, prune guards)
+
+**Not my job**
+
+9. I never invent names: tracking `apache/airflow` at `v2-7-stable` names
+   itself. (derived naming)
+10. I never run git maintenance: no gc, no repack, no worrying about a
+    years-old checkout getting slow or huge. Shed owns upkeep and does it
+    at a moment I can see (`shed prune`). (gc ownership)
+11. I only ever think about two things: repos I read and workspaces
+    agents write in. Any machinery behind them stays invisible unless I go
+    looking. (two-concept model, `.internal/`)
+
+**Resources**
+
+12. Tracking N versions of a big repo does not cost N copies of its
+    history, and disk usage does not creep without bound as upstream
+    churns. (worktrees, one object DB per upstream)
+13. Syncing costs one network fetch per upstream, no matter how many
+    versions I track. (mirror)
+
+**Trust**
+
+14. When something is wrong — a tracked branch deleted upstream, a repo
+    unsyncable, a sync failure — shed tells me in plain language, and a
+    broken shed-owned artifact repairs itself rather than wedging.
+    (validation, repair passes, empty/zombie states)
+15. Cleanup only ever reclaims what is finished: merged, landed, or aged
+    out — and refuses to touch anything dirty or unpushed without `--force`.
+    (prune, unchanged from today)
+
+Requirement 8 is the charter: where it conflicts with anything else, it
+wins. Requirements 6, 12, and 13 are why mirrors exist; 2–4 are why repos
+exist as their own tier; 10 and 14 are why shed, not git defaults, owns
+maintenance and repair.
+
 ## Background: why the previous local-clone attempt was messy
 
 An earlier exploration of clone-from-store failed for a structural reason,
