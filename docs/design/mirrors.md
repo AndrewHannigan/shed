@@ -601,7 +601,13 @@ worked through.
    permanent repos. (`.keep`-marking the base packs was considered to make
    this safe under gc; rejected as hand-reimplementing the dependency
    tracking worktrees give natively — which packs to mark, when removal is
-   safe.)
+   safe.) The variant with origin repointed to the upstream URL changes
+   nothing: repos never push, so origin exists only to fetch — from
+   upstream directly (breaks one-fetch-per-upstream, req 13) or from the
+   mirror by path anyway (the upstream origin is cosmetic and the churn
+   accumulation stands). The only zero-duplication clone variant is
+   re-clone-on-every-change, which rewrites the full working tree each
+   time the tip moves; worktrees update only changed files.
 2. **`--shared` clones (alternates to the mirror).** Zero duplication and a
    real `.git` dir — but the dependency is *invisible to git*: the mirror's
    gc doesn't know the repo exists, so a force-pushed upstream branch plus
