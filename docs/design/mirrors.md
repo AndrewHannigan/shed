@@ -77,7 +77,7 @@ defaults, owns maintenance and repair.
 
 | Tier | What it is | Writable by | Lifetime | Created by |
 |---|---|---|---|---|
-| **mirror** | bare repo; upstream truth in `refs/remotes/origin/*` | shed (network fetch) | permanent, one per upstream URL | derived — never configured directly |
+| **mirror** | fetch-only repo, tree never checked out; upstream truth in `refs/remotes/origin/*` | shed (network fetch) | permanent, one per upstream URL | derived — never configured directly |
 | **catalog repo** | worktree of the mirror on a local branch (or detached at a tag) | shed (ff-merge on sync) | permanent, N per mirror | config (`[[repos]]`) |
 | **workspace** | plain local clone off a catalog repo, origin → upstream | agents | disposable | agents (`shed workspace new`) |
 
@@ -129,20 +129,31 @@ This split is what makes the design safe by construction:
 
 ### Mirror creation spec
 
-Mirror = `git init --bare` (into a temp dir, renamed into place — a
-kill -9 mid-creation must not leave a half-mirror that later syncs trust)
-+ `remote add origin <url>` + the refspecs above + first fetch. A bare
-*clone* would populate `refs/heads/*`, which is the catalogs' namespace.
-Creation-time config, all verified necessary:
+The mirror is a normal (non-bare) repo whose working tree is **never
+checked out** and whose HEAD is **detached** — it must not occupy any
+branch, since `refs/heads/*` belongs to the catalogs. Bare would also
+work, but non-bare is simpler: it dodges two bare-repo footguns outright
+(`extensions.worktreeConfig` requires `core.bare` relocation on bare
+repos or it bricks every worktree, and bare defaults
+`core.logAllRefUpdates` off, breaking reflog-based labels), and it keeps
+the `.git/`-sidecar layout of today's store code. All verified.
 
-- **`extensions.worktreeConfig=true`, with `core.bare` relocated to the
-  mirror's own `config.worktree`.** Enabling the extension naively bricks
-  every linked worktree (the shared `core.bare=true` leaks into them);
-  relocating at creation means per-repo `Git` config can be applied later
-  with no migration.
-- **`core.logAllRefUpdates=true`** — bare repos default it off; branch
-  reflogs support the ff-merge audit trail and named detach labels for
-  tag catalogs.
+Creation = `git init` (into a temp dir, renamed into place — a kill -9
+mid-creation must not leave a half-mirror that later syncs trust) +
+`remote add origin <url>` + the refspecs above + first fetch. A *clone*
+would create a local default branch and attach HEAD to it — the catalogs'
+namespace. HEAD is then set ref-only to the default branch tip
+(`update-ref --no-deref HEAD`), and re-pointed the same way each sync:
+the tip moves, the tree is never materialized. There is no consumer for a
+mirror working tree — the default-branch catalog is the visible checkout
+— so checking one out would burn checkout IO per sync and a full tree of
+disk for nothing.
+
+Creation-time config:
+
+- **`extensions.worktreeConfig=true`** — per-repo `Git` config on
+  catalogs without leaking to the mirror or siblings; on a non-bare repo
+  this needs no `core.bare` surgery (verified).
 - **`gc.auto=0`** (see the gc section).
 - **A `pre-receive` hook rejecting all pushes.** A half-created workspace
   (crash between clone and `remote set-url`) has a shed-owned path as
@@ -236,7 +247,8 @@ Unchanged from earlier iterations:
 ├── logs/                                     # user-serviceable when debugging
 └── .internal/                                # plumbing — never printed as a destination
     ├── mirrors/
-    │   └── github.com/apache/airflow.git/    # bare; shed.lock / shed.meta at top level
+    │   └── github.com/apache/airflow/        # fetch-only, tree never checked out;
+    │       └── .git/{shed.lock,shed.meta}    #   sidecars in .git as today
     ├── sync-errors/                          # was .sync-errors/ — dot dropped
     ├── sessions-pending/
     ├── bg-sync.lock
@@ -247,11 +259,11 @@ Unchanged from earlier iterations:
 - **One `.internal/` bucket, one rule**: if shed prints a path for the
   user or an agent to visit, it's top-level; everything else lives under
   `.internal/`. `logs/` stays out because it exists for the user.
-- **Bare mirrors have no `.git/` dir**: `shed.lock`/`shed.meta` sit at the
-  mirror top level; the mirror's meta owns `LastSyncAt`/`LastError` and
-  per-catalog records (keyed by repo name — **not** in git's
-  `worktrees/<id>/` admin dir, which `git worktree prune` deletes exactly
-  when a broken repo's record matters).
+- **Mirror sidecars live in its `.git/`** (`shed.lock`, `shed.meta`),
+  matching today's store pattern; the mirror's meta owns
+  `LastSyncAt`/`LastError` and per-catalog records (keyed by repo name —
+  **not** in git's `worktrees/<id>/` admin dir, which `git worktree prune`
+  deletes exactly when a broken repo's record matters).
 - A catalog repo's `.git` is a pointer file into the mirror; per-repo
   state beyond that is nearly nil (the branch is the state; identity is in
   config).
@@ -266,7 +278,9 @@ per mirror (network, exclusive lock):
        '+refs/tags/*:refs/tags/*' --prune --prune-tags   ← the only network step
      (structurally unblockable: no worktree can have refs/remotes/* checked
       out, so agent mischief in catalogs can never fail the fetch)
-  2. refresh HEAD symref to upstream default (git ls-remote --symref)
+  2. refresh refs/remotes/origin/HEAD to upstream default
+     (git ls-remote --symref); re-point the mirror's detached HEAD to the
+     default tip ref-only (update-ref --no-deref — no checkout, ever)
   3. write shed.meta
   — release the exclusive lock between phases —
 
@@ -431,13 +445,17 @@ tests of the current scheme):
   (also verified working, offline)
 - push to a checked-out catalog branch is refused natively; push to other
   names lands in mirror `refs/heads/*` → hook required
+- the non-bare, never-checked-out, detached-HEAD mirror works end to end:
+  `init` + fetch leaves an empty working tree; worktree add, per-worktree
+  config (no `core.bare` surgery — that relocation is only needed on
+  *bare* repos, where skipping it bricks every worktree), fetch with
+  catalog checked out, ff-merge, and clone-from-catalog all pass
 - worktree HEADs/branches survive `gc --prune=now --aggressive` after
   upstream force-push; hardlink clones; `clone --branch <tag>` from local
-  sources; `extensions.worktreeConfig` isolation (after `core.bare`
-  relocation — without it, enabling the extension bricks every worktree);
-  moved-tag clobber failure and its forced-refspec fix; `worktree remove`
-  zombie on locked trees; workspace clones get `refs/remotes/origin/HEAD`
-  so landed-work prune logic survives `remote set-url`
+  sources; moved-tag clobber failure and its forced-refspec fix;
+  `worktree remove` zombie on locked trees; workspace clones get
+  `refs/remotes/origin/HEAD` so landed-work prune logic survives
+  `remote set-url`
 
 ## Open questions / remaining notes
 
@@ -464,11 +482,11 @@ tests of the current scheme):
    plumbing paths; `Track` on `Repo`; `@` name derivation + sanitization;
    `Validate`: name uniqueness, sanitized-path uniqueness, `(url, track)`
    uniqueness, shared-mirror transport warning; track validation.
-2. **Mirror package.** init --bare in temp-then-rename, remote +
+2. **Mirror package.** Non-bare `git init` in temp-then-rename, remote +
    refspecs (remote-tracking heads + forced tags), `--prune --prune-tags`
-   fetch, HEAD-symref refresh, creation config (worktreeConfig +
-   core.bare relocation, logAllRefUpdates, gc.auto=0), pre-receive reject
-   hook, canonical identity, lock/meta at top level.
+   fetch, ref-only detached HEAD (never checked out), origin/HEAD
+   refresh, creation config (worktreeConfig, gc.auto=0), pre-receive
+   reject hook, canonical identity, lock/meta in `.git/`.
 3. **Catalog package.** Create = `worktree add -b <track>
    origin/<track>` (branch) or `worktree add --detach` + named checkout
    (tag) → tree lock; update = repair pass (wrong branch, stale
