@@ -338,10 +338,30 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr, fetchErr
 	}
 
 	if fetchErr != nil {
-		// The checkout is usable (created or kept from the last-synced
-		// state), but the sync itself failed: report that, and leave the
-		// meta's sync records untouched — "last sync" keeps meaning "last
-		// time the network was actually reached".
+		// A tag is a permanent pointer: with the tag already in the mirror,
+		// the checkout is exact — a fetch could not have changed it — so a
+		// failed refresh is harmless for this repo and it counts as ok.
+		// (A gone upstream still reports, though: that's a standing reminder
+		// to `shed rm`, not a staleness question.)
+		if ref.IsTag && !looksGoneUpstream(strings.ToLower(fetchErr.Error())) {
+			_ = mirror.RecordCatalogOK(key, t.name, time.Now().UTC())
+			mirror.ClearFirstSyncError(t.name)
+			r.Status = "ok"
+			if note == "created" {
+				r.Note = "created from mirror (offline — a tag never changes)"
+			} else {
+				r.Note = note
+			}
+			if size, err := mirror.Size(key); err == nil {
+				r.SizeBytes = size
+			}
+			r.DurationMs = time.Since(start).Milliseconds()
+			return r
+		}
+		// A branch checkout really can be behind: the checkout is usable
+		// (created or kept from the last-synced state), but the sync itself
+		// failed — report that, and leave the meta's sync records untouched
+		// so "last sync" keeps meaning "last time the network was reached".
 		r = failFetch(r, start, fetchErr)
 		if note == "created" {
 			r.Note = "checkout created from last-synced state"

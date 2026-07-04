@@ -310,12 +310,15 @@ counted apart from failures, does not affect the exit code, and is left in
 place with a hint to remove it with 'shed rm'. sync never deletes a repo or
 its workspace on your behalf.
 
-A failed fetch (offline, auth, upstream down) is reported as a failure, but
-it does not block the local phase: checkouts are still created or kept from
-the mirror's last-synced state. Adding a new version of an already-mirrored
-repo therefore materializes even offline — every branch and tag from the
-last fetch is already on disk — just marked stale until a fetch succeeds.
-Only a repo whose mirror has never been cloned at all hard-fails offline.
+A failed fetch (offline, auth, upstream down) does not block the local
+phase: checkouts are still created or kept from the mirror's last-synced
+state, so adding a new version of an already-mirrored repo materializes
+even offline — every branch and tag from the last fetch is already on
+disk. A tag-pinned repo then counts as ok (a tag never changes, so its
+checkout is exact, not stale); a branch-tracked repo reports the failure
+and stays flagged until a fetch succeeds, since its checkout may be
+behind. Only a repo whose mirror has never been cloned at all hard-fails
+offline.
 
 Behavior, in two phases per upstream mirror:
 

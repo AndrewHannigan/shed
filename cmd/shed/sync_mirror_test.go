@@ -282,16 +282,15 @@ func TestSyncMirrorJobOfflineMaterializesFromMirror(t *testing.T) {
 	for _, r := range results {
 		byName[r.Name] = r
 	}
-	// Both repos report the failure (the data is stale)…
-	for name, r := range byName {
-		if r.Status == "ok" {
-			t.Errorf("%s: a failed fetch must not report ok, got %+v", name, r)
-		}
+	// The branch-tracked repo reports the failure (it really can be behind)…
+	if r := byName[key]; r.Status != "error" || !strings.Contains(r.Note, "kept from last-synced state") {
+		t.Errorf("branch repo should report the failed refresh with its checkout kept, got %+v", r)
 	}
-	// …but the new version's checkout materialized from the mirror.
+	// …but the tag-pinned repo counts as ok: the tag was already in the
+	// mirror and a tag never changes, so its checkout is exact, not stale.
 	newRepo := byName[key+"@v1"]
-	if !strings.Contains(newRepo.Note, "created from last-synced state") {
-		t.Errorf("offline creation should be noted, got %+v", newRepo)
+	if newRepo.Status != "ok" || !strings.Contains(newRepo.Note, "created from mirror") {
+		t.Errorf("offline tag materialization should be ok, got %+v", newRepo)
 	}
 	if !catalog.Valid(key + "@v1") {
 		t.Fatal("the new version's checkout should exist offline")
@@ -303,8 +302,12 @@ func TestSyncMirrorJobOfflineMaterializesFromMirror(t *testing.T) {
 	if !catalog.Valid(key) {
 		t.Error("the existing checkout must survive an offline sync")
 	}
-	// The staleness is recorded for status to surface.
+	// The staleness is recorded for status to surface — for the branch repo…
 	if st := mirror.StatusFor(key, key); st == nil || st.LastError == "" {
 		t.Errorf("fetch failure should be recorded on the mirror, got %+v", st)
+	}
+	// …but not for the tag repo, whose content the failed fetch cannot affect.
+	if st := mirror.StatusFor(key, key+"@v1"); st == nil || st.LastError != "" {
+		t.Errorf("a frozen tag satisfied from the mirror should read clean, got %+v", st)
 	}
 }

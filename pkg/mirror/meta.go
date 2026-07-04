@@ -140,16 +140,18 @@ func DropCatalog(key, name string) error {
 }
 
 // StatusFor returns the effective sync status for one catalog repo: its own
-// record merged with the mirror-level fetch state (a fetch failure stales
-// every catalog of that mirror, so the more recent of the two errors wins).
-// Returns nil when the mirror has no meta at all.
+// record merged with the mirror-level fetch state — a fetch failure stales
+// every catalog of that mirror, EXCEPT one whose own record was stamped
+// clean after the failure (a tag checkout satisfied from the mirror during
+// an offline sync: a tag never changes, so the failed refresh is harmless
+// for it). Returns nil when the mirror has no meta at all.
 func StatusFor(key, name string) *CatalogStatus {
 	m, err := LoadMeta(key)
 	if err != nil || m == nil {
 		return nil
 	}
 	out, known := m.Catalogs[name]
-	if m.LastError != "" && m.LastErrorAt.After(out.LastErrorAt) {
+	if m.LastError != "" && m.LastErrorAt.After(out.LastErrorAt) && m.LastErrorAt.After(out.LastSyncAt) {
 		out.LastError = m.LastError
 		out.LastErrorAt = m.LastErrorAt
 	}
