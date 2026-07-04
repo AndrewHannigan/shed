@@ -241,3 +241,70 @@ func TestSyncMirrorJobRejectsUnsafeURL(t *testing.T) {
 		t.Fatal("a traversing URL escaped MirrorsDir")
 	}
 }
+
+// A failed fetch must not block the local phase: with the mirror already on
+// disk, a newly added version still materializes from the last-synced state
+// (every branch and tag from the previous fetch is local), reported as a
+// failure so staleness stays visible. This is the offline `shed add
+// <repo> --track <tag>` case.
+func TestSyncMirrorJobOfflineMaterializesFromMirror(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	root := t.TempDir()
+	up := filepath.Join(root, "upstream")
+	gitRun(t, root, "init", "-q", "-b", "main", up)
+	if err := os.WriteFile(filepath.Join(up, "a.txt"), []byte("1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, up, "add", "a.txt")
+	gitRun(t, up, "commit", "-q", "-m", "first")
+	gitRun(t, up, "tag", "v1")
+
+	const key = "github.com/acme/widget"
+	// First sync online: default-branch repo only. The mirror now holds the
+	// v1 tag too (forced tag refspec).
+	job := mirrorJob{key: key, url: up, repos: []syncTarget{{name: key, url: up}}}
+	if r := syncMirrorJob(job, nil, 0, nil)[0]; r.Status != "ok" {
+		t.Fatalf("online sync should succeed: %+v", r)
+	}
+
+	// Go "offline": point the mirror's origin somewhere unreachable.
+	gitRun(t, paths.MirrorPath(key), "remote", "set-url", "origin", filepath.Join(root, "nonexistent"))
+
+	// Now the user adds a v1-pinned version and syncs, offline.
+	job.repos = append(job.repos, syncTarget{name: key + "@v1", url: up, track: "v1"})
+	results := syncMirrorJob(job, nil, 0, nil)
+	byName := map[string]syncResult{}
+	for _, r := range results {
+		byName[r.Name] = r
+	}
+	// Both repos report the failure (the data is stale)…
+	for name, r := range byName {
+		if r.Status == "ok" {
+			t.Errorf("%s: a failed fetch must not report ok, got %+v", name, r)
+		}
+	}
+	// …but the new version's checkout materialized from the mirror.
+	newRepo := byName[key+"@v1"]
+	if !strings.Contains(newRepo.Note, "created from last-synced state") {
+		t.Errorf("offline creation should be noted, got %+v", newRepo)
+	}
+	if !catalog.Valid(key + "@v1") {
+		t.Fatal("the new version's checkout should exist offline")
+	}
+	if _, err := gitx.Output(paths.CatalogPath(key+"@v1"), "status"); err != nil {
+		t.Errorf("offline-created checkout should be a working repo: %v", err)
+	}
+	// And the existing checkout was kept, not destroyed.
+	if !catalog.Valid(key) {
+		t.Error("the existing checkout must survive an offline sync")
+	}
+	// The staleness is recorded for status to surface.
+	if st := mirror.StatusFor(key, key); st == nil || st.LastError == "" {
+		t.Errorf("fetch failure should be recorded on the mirror, got %+v", st)
+	}
+}

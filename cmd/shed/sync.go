@@ -229,24 +229,31 @@ func syncMirrorJob(job mirrorJob, keep map[string]bool, ifOlderThan time.Duratio
 			fetch = false
 		}
 	}
+	// A failed fetch (offline, auth, upstream down) is recorded and reported
+	// as a failure — the repo IS stale — but it does not abort the local
+	// phase: the mirror still holds everything from the last successful
+	// fetch, so checkouts are created or kept from that state. This is what
+	// lets a newly added version of an already-mirrored repo materialize
+	// offline, the same graceful degradation `workspace new` promises.
+	var fetchErr error
 	if fetch {
 		if err := mirror.Fetch(job.key, progress); err != nil {
-			_ = mirror.RecordFetchError(job.key, err.Error())
-			lock.Unlock()
-			return failAllFetch(job, start, err)
+			fetchErr = err
+		} else if err := mirror.RefreshHead(job.key); err != nil {
+			fetchErr = err
 		}
-		if err := mirror.RefreshHead(job.key); err != nil {
-			_ = mirror.RecordFetchError(job.key, err.Error())
-			lock.Unlock()
-			return failAllFetch(job, start, err)
+		if fetchErr != nil {
+			_ = mirror.RecordFetchError(job.key, fetchErr.Error())
+		} else {
+			_ = mirror.RecordFetchOK(job.key, time.Now().UTC())
 		}
-		_ = mirror.RecordFetchOK(job.key, time.Now().UTC())
 	}
 
 	// Resolve each repo's track against the fetched refs — the pre-check that
 	// turns a deleted upstream branch into "track 'x' no longer exists
 	// upstream" instead of a git internals error — and use the resolved set
-	// (plus keep) to sweep stray local branches out of the mirror.
+	// (plus keep) to sweep stray local branches out of the mirror. The sweep
+	// is cleanup, not repair; skip it when the refs are known stale.
 	refs := make(map[string]catalog.Ref, len(job.repos))
 	resolveErrs := make(map[string]error)
 	expected := make(map[string]bool, len(keep))
@@ -264,20 +271,25 @@ func syncMirrorJob(job mirrorJob, keep map[string]bool, ifOlderThan time.Duratio
 			expected[ref.Short] = true
 		}
 	}
-	mirror.PruneStrayBranches(job.key, expected)
+	if fetchErr == nil {
+		mirror.PruneStrayBranches(job.key, expected)
+	}
 	lock.Unlock() // released between the network phase and the catalog phase
 
 	results := make([]syncResult, 0, len(job.repos))
 	for _, t := range job.repos {
-		results = append(results, syncCatalog(job.key, t, refs[t.name], resolveErrs[t.name], !fetch, start))
+		results = append(results, syncCatalog(job.key, t, refs[t.name], resolveErrs[t.name], fetchErr, !fetch, start))
 	}
 	return results
 }
 
 // syncCatalog runs the local phase for one repo: create/repair/fast-forward
 // its catalog checkout under the mirror's exclusive lock, and record the
-// outcome on the mirror's meta.
-func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr error, mirrorSkipped bool, start time.Time) syncResult {
+// outcome on the mirror's meta. With fetchErr set the phase still runs — the
+// checkout is materialized or kept from the last-synced state — but the repo
+// reports the fetch failure and no fresh sync is recorded (the data really is
+// stale).
+func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr, fetchErr error, mirrorSkipped bool, start time.Time) syncResult {
 	r := syncResult{Name: t.name}
 
 	lock, err := mirror.AcquireLock(key, true, syncLockTimeout)
@@ -300,6 +312,12 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr error, mi
 	defer lock.Unlock()
 
 	if resolveErr != nil {
+		// With a failed fetch, the resolve ran against stale refs — a
+		// missing track or apparent emptiness may just mean "never fetched" —
+		// so the fetch failure is the truthful report.
+		if fetchErr != nil {
+			return failFetch(r, start, fetchErr)
+		}
 		// An upstream with no commits is a state, not an error: nothing to
 		// check out yet; the repo materializes on the first sync after
 		// upstream gains commits.
@@ -317,6 +335,20 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr error, mi
 	note, err := catalog.Ensure(key, t.name, ref, t.git)
 	if err != nil {
 		return finishErr(r, key, start, err)
+	}
+
+	if fetchErr != nil {
+		// The checkout is usable (created or kept from the last-synced
+		// state), but the sync itself failed: report that, and leave the
+		// meta's sync records untouched — "last sync" keeps meaning "last
+		// time the network was actually reached".
+		r = failFetch(r, start, fetchErr)
+		if note == "created" {
+			r.Note = "checkout created from last-synced state"
+		} else {
+			r.Note = "checkout kept from last-synced state"
+		}
+		return r
 	}
 
 	if mirrorSkipped && note == "" {
@@ -418,11 +450,27 @@ func expectedBranchesByMirror(c *config.Config) map[string]map[string]bool {
 	return out
 }
 
-// failAllFetch reports a mirror-level failure (create or fetch) as one result
-// per repo of the job: every catalog of a mirror is equally stale when its
-// fetch fails. The failure is persisted once at the mirror level when the
-// mirror exists; repos with no mirror yet get standalone first-sync records
-// so status has something to show.
+// failFetch fills one repo's result for a failed network phase: "gone" when
+// the remote no longer resolves, "error" otherwise. Nothing is persisted here
+// — the mirror-level RecordFetchError already holds the record, which
+// StatusFor surfaces for every catalog of the mirror.
+func failFetch(r syncResult, start time.Time, err error) syncResult {
+	if looksGoneUpstream(strings.ToLower(err.Error())) {
+		r.Status = "gone"
+	} else {
+		r.Status = "error"
+	}
+	r.Error = err.Error()
+	r.DurationMs = time.Since(start).Milliseconds()
+	return r
+}
+
+// failAllFetch reports a mirror CREATION failure as one result per repo of
+// the job — with no mirror on disk there is no last-synced state to fall
+// back on, so this is the one network failure that stays a hard stop. Repos
+// with no mirror get standalone first-sync records so status has something
+// to show. (A failed fetch of an EXISTING mirror does not come here: the
+// local phase still runs from the last-synced refs — see syncMirrorJob.)
 func failAllFetch(job mirrorJob, start time.Time, err error) []syncResult {
 	gone := looksGoneUpstream(strings.ToLower(err.Error()))
 	out := make([]syncResult, 0, len(job.repos))
@@ -726,9 +774,17 @@ func printSyncLine(r syncResult) {
 	case "skipped":
 		fmt.Printf("  %s  -  skipped (%s)\n", r.Name, r.Note)
 	case "gone":
-		fmt.Printf("  %s  ⚠  gone upstream\n", r.Name)
+		if r.Note != "" {
+			fmt.Printf("  %s  ⚠  gone upstream — %s\n", r.Name, r.Note)
+		} else {
+			fmt.Printf("  %s  ⚠  gone upstream\n", r.Name)
+		}
 	case "error":
-		fmt.Printf("  %s  ✗  %s\n", r.Name, r.Error)
+		if r.Note != "" {
+			fmt.Printf("  %s  ✗  %s — %s\n", r.Name, r.Error, r.Note)
+		} else {
+			fmt.Printf("  %s  ✗  %s\n", r.Name, r.Error)
+		}
 	}
 }
 
