@@ -5,9 +5,10 @@ Author: design discussion (branch `claude/workspace-cached-repo-creation-bi8yna`
 
 ## Invariant
 
-Only shed writes to mirrors and catalog repos. Agents only ever write to
-workspaces. Everything above that line shares state for efficiency;
-everything below it is isolated for durability.
+Only shed writes to mirrors and catalog repos; agents only ever write to
+workspaces. That write barrier is the design's dividing line: the
+shed-written tiers (mirror, catalogs) share state for efficiency, and the
+agent-written tier (workspaces) is isolated for durability.
 
 ## Goal
 
