@@ -169,12 +169,11 @@ func workspaceSource(repo *config.Repo, name string) (workspace.Source, error) {
 		return workspace.Source{}, err
 	}
 	return workspace.Source{
-		Repo:       name,
-		MirrorKey:  key,
-		Track:      ref.Short,
-		TrackIsTag: ref.IsTag,
-		URL:        repo.URL,
-		Git:        repo.Git,
+		Repo:      name,
+		MirrorKey: key,
+		Track:     ref.Short,
+		URL:       repo.URL,
+		Git:       repo.Git,
 	}, nil
 }
 

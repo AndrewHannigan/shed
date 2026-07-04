@@ -187,3 +187,28 @@ func TestNewWorkspaceHasOriginHead(t *testing.T) {
 		t.Errorf("workspace should have refs/remotes/origin/HEAD: %v", err)
 	}
 }
+
+// An existing real workspace is never deleted by a failed re-creation: the
+// second New must error out and leave the first workspace's files untouched
+// (the destination is claimed atomically, so a clone failure can only ever
+// clean up a directory this call created).
+func TestNewNeverClobbersExistingWorkspace(t *testing.T) {
+	_, src := setupCatalog(t)
+
+	path, _, err := New(src, "fix-thing", "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	precious := filepath.Join(path, "precious.txt")
+	if err := os.WriteFile(precious, []byte("unsaved work"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := New(src, "fix-thing", ""); err == nil {
+		t.Fatal("re-creating an existing workspace should fail")
+	}
+	data, err := os.ReadFile(precious)
+	if err != nil || string(data) != "unsaved work" {
+		t.Fatalf("existing workspace was clobbered: %q, %v", data, err)
+	}
+}

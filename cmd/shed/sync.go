@@ -80,6 +80,11 @@ type mirrorJob struct {
 	key   string // mirror identity (host/owner/repo)
 	url   string // fetch transport: the first config entry's URL
 	repos []syncTarget
+	// keyErr is set when no safe mirror identity could be derived from the
+	// URL. Such a job must fail its repos without touching the disk: a raw
+	// URL is not a validated relative path, and joining one under MirrorsDir
+	// could escape it.
+	keyErr error
 }
 
 func runSync(names []string, jobs int, ifOlderThan time.Duration, jsonOut bool) error {
@@ -191,6 +196,21 @@ func runSync(names []string, jobs int, ifOlderThan time.Duration, jsonOut bool) 
 func syncMirrorJob(job mirrorJob, keep map[string]bool, ifOlderThan time.Duration, progress io.Writer) []syncResult {
 	start := time.Now()
 
+	// No safe mirror identity: fail every repo of the job without touching
+	// the disk. The standalone first-sync records keep the failure visible in
+	// `shed status` (they are keyed by validated repo names, so they're safe
+	// to write even when the URL isn't).
+	if job.keyErr != nil {
+		out := make([]syncResult, 0, len(job.repos))
+		for _, t := range job.repos {
+			r := syncResult{Name: t.name, Status: "error", Error: job.keyErr.Error()}
+			_ = mirror.RecordFirstSyncError(t.name, job.keyErr.Error())
+			r.DurationMs = time.Since(start).Milliseconds()
+			out = append(out, r)
+		}
+		return out
+	}
+
 	if !mirror.Exists(job.key) {
 		if err := mirror.Create(job.url, job.key, progress); err != nil {
 			return failAllFetch(job, start, err)
@@ -262,13 +282,20 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr error, mi
 
 	lock, err := mirror.AcquireLock(key, true, syncLockTimeout)
 	if err != nil {
+		// Deliberately NOT persisted to the mirror meta: we don't hold the
+		// lock, so a mutateMeta here would race the very process that does
+		// (and could clobber its fresh records). The holder is actively
+		// syncing this mirror anyway — its outcome is the truthful record.
+		r.Status = "error"
 		if errors.Is(err, mirror.ErrLocked) {
 			r.locked = true
-			return finishErr(r, key, start, fmt.Errorf(
-				"locked: could not acquire %s within %s (held by another shed process)",
-				paths.MirrorLockFile(key), syncLockTimeout))
+			r.Error = fmt.Sprintf("locked: could not acquire %s within %s (held by another shed process)",
+				paths.MirrorLockFile(key), syncLockTimeout)
+		} else {
+			r.Error = err.Error()
 		}
-		return finishErr(r, key, start, err)
+		r.DurationMs = time.Since(start).Milliseconds()
+		return r
 	}
 	defer lock.Unlock()
 
@@ -320,31 +347,49 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr error, mi
 
 // syncSingle refreshes one repo — its mirror plus its own catalog — for
 // `workspace new`, where exactly one repo is in scope (`add` goes through
-// runSync with the new entry's name instead).
+// runSync with the new entry's name instead). The stray-branch keep-set is
+// still derived from the FULL config: a single-repo refresh must never treat
+// a sibling catalog's branch as stray.
 func syncSingle(t syncTarget, progress io.Writer) syncResult {
 	job := groupByMirror([]syncTarget{t})[0]
-	return syncMirrorJob(job, nil, 0, progress)[0]
+	var keep map[string]bool
+	if c, err := config.Load(); err == nil {
+		keep = expectedBranchesByMirror(c)[job.key]
+	}
+	return syncMirrorJob(job, keep, 0, progress)[0]
 }
 
 // groupByMirror buckets sync targets by their upstream's mirror identity, so
 // syncing N versions of one repo costs one network fetch. Order of first
 // appearance is preserved; the first entry's URL is the fetch transport.
+//
+// A URL that yields no identity — unparseable, or parsing to something that
+// is not a safe relative path (repo names get this validation at config
+// time; mirror keys must get it too, or a hostile URL could place the mirror
+// outside MirrorsDir) — produces a job with keyErr set, which fails its
+// repos without ever touching the disk.
 func groupByMirror(targets []syncTarget) []mirrorJob {
 	var jobs []mirrorJob
 	index := make(map[string]int)
 	for _, t := range targets {
 		key, err := paths.DefaultName(t.url)
-		if err != nil {
-			// An unparseable URL can't map to a mirror; give it a job of its
-			// own so its failure is reported per-repo by the create step.
-			key = t.url
+		if err == nil {
+			if verr := paths.ValidateName(key); verr != nil {
+				err = fmt.Errorf("unsafe mirror identity derived from URL %q: %w", t.url, verr)
+			}
+		} else {
+			err = fmt.Errorf("cannot derive a mirror identity from URL %q: %w", t.url, err)
 		}
-		if i, ok := index[key]; ok {
+		bucket := key
+		if err != nil {
+			bucket = "\x00invalid\x00" + t.url
+		}
+		if i, ok := index[bucket]; ok {
 			jobs[i].repos = append(jobs[i].repos, t)
 			continue
 		}
-		index[key] = len(jobs)
-		jobs = append(jobs, mirrorJob{key: key, url: t.url, repos: []syncTarget{t}})
+		index[bucket] = len(jobs)
+		jobs = append(jobs, mirrorJob{key: key, url: t.url, repos: []syncTarget{t}, keyErr: err})
 	}
 	return jobs
 }
@@ -398,7 +443,9 @@ func failAllFetch(job mirrorJob, start time.Time, err error) []syncResult {
 }
 
 // failAllLock reports a mirror lock acquisition failure for every repo of the
-// job.
+// job. Nothing is persisted to the mirror meta: without the lock a
+// read-modify-write of shed.meta would race the holder, and the holder — an
+// active sync of this same mirror — is the truthful record anyway.
 func failAllLock(job mirrorJob, start time.Time, err error) []syncResult {
 	out := make([]syncResult, 0, len(job.repos))
 	for _, t := range job.repos {

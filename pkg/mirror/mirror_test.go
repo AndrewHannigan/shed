@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -188,6 +189,83 @@ func TestPruneStrayBranches(t *testing.T) {
 	branches, _ := LocalBranches(key)
 	if len(branches) != 1 || branches[0] != "keeper" {
 		t.Errorf("want only keeper to survive, got %v", branches)
+	}
+}
+
+// A lock-acquisition timeout is reported as ErrLocked (flock itself reports
+// it as context.DeadlineExceeded), so callers' errors.Is classification —
+// exit codes, "held by another shed process" messages — actually fires.
+func TestAcquireLockTimeoutReturnsErrLocked(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(paths.MirrorPath(key), ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	held, err := AcquireLock(key, true, time.Second)
+	if err != nil {
+		t.Fatalf("first AcquireLock: %v", err)
+	}
+	defer held.Unlock()
+
+	if _, err := AcquireLock(key, true, 250*time.Millisecond); !errors.Is(err, ErrLocked) {
+		t.Fatalf("contended AcquireLock = %v, want ErrLocked", err)
+	}
+}
+
+// Locking an absent mirror must fail rather than fabricate the <mirror>/.git
+// marker Exists() trusts — otherwise a lock taken in the gap after a
+// concurrent removal would poison the mirror forever (Exists true, Create
+// skipped, every fetch failing "not a git repository").
+func TestAcquireLockRefusesAbsentMirror(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if _, err := AcquireLock(key, true, time.Second); err == nil {
+		t.Fatal("locking an absent mirror should fail")
+	}
+	if Exists(key) {
+		t.Fatal("a failed lock attempt must not fabricate the mirror's .git dir")
+	}
+}
+
+// OnDisk must not report an in-progress (or crashed) creation temp dir as a
+// mirror: prune's orphan sweep would delete a clone out from under the
+// process building it.
+func TestOnDiskSkipsTempDirs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, dir := range []string{key, key + ".tmp"} {
+		if err := os.MkdirAll(filepath.Join(paths.MirrorPath(dir), ".git"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keys, err := OnDisk()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0] != key {
+		t.Fatalf("OnDisk = %v, want only %q (temp dirs skipped)", keys, key)
+	}
+}
+
+// Two concurrent creations of one mirror must both succeed and publish a
+// healthy repo — the creation lock serializes them; without it they clone
+// into and delete the same fixed temp path under each other.
+func TestConcurrentCreateBothSucceed(t *testing.T) {
+	requireGit(t)
+	t.Setenv("HOME", t.TempDir())
+	up := makeUpstream(t)
+
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() { errs <- Create(up, key, nil) }()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent Create: %v", err)
+		}
+	}
+	if _, ok := gitx.RevParse(paths.MirrorPath(key), "refs/remotes/origin/main"); !ok {
+		t.Fatal("published mirror should be a healthy clone")
+	}
+	if _, err := os.Stat(paths.MirrorPath(key) + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("no temp dir should remain after creation, stat err=%v", err)
 	}
 }
 

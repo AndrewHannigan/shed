@@ -37,16 +37,6 @@ import (
 // ErrLocked is returned when a mirror's lock cannot be acquired in time.
 var ErrLocked = errors.New("mirror locked by another process")
 
-// Key returns the mirror identity for an upstream URL: the URL-derived
-// "host/owner/repo" path, never the raw URL string, so two transports of one
-// upstream share a mirror.
-func Key(url string) (string, error) {
-	return paths.DefaultName(url)
-}
-
-// Path returns the mirror's on-disk path.
-func Path(key string) string { return paths.MirrorPath(key) }
-
 // Exists reports whether the mirror is present on disk (its .git dir exists —
 // a bare top-level dir left by some interrupted operation does not count, so
 // a half-mirror is never trusted).
@@ -94,9 +84,24 @@ func Create(url, key string, progress io.Writer) error {
 	if Exists(key) {
 		return nil
 	}
+	// Serialize concurrent creations of the same mirror. The mirror's own
+	// lockfile lives inside the repo being created, so creation needs a
+	// sibling lock: without it, two processes (a session-start bg-sync and a
+	// user-run add/workspace-new are routine peers) would clone into and
+	// RemoveAll the same temp path under each other. The loser blocks until
+	// the winner publishes, then sees Exists and returns nil.
+	lock, err := acquireCreateLock(key, createLockTimeout)
+	if err != nil {
+		return fmt.Errorf("mirror creation of %s: %w", key, err)
+	}
+	defer lock.Unlock()
+	if Exists(key) {
+		return nil // another process won the race and published
+	}
 	tmp := dest + ".tmp"
 	// A leftover temp dir from a crashed prior creation is garbage; the rename
-	// below is the only step that publishes a mirror.
+	// below is the only step that publishes a mirror. Safe under the creation
+	// lock — no live clone can own this path.
 	if err := os.RemoveAll(tmp); err != nil {
 		return err
 	}
@@ -298,6 +303,9 @@ func Remove(key string, timeout time.Duration) error {
 	if err := os.RemoveAll(p); err != nil {
 		return err
 	}
+	// Drop the sibling creation lockfile too, before pruning empty parents
+	// (a stray file would keep the parent dir alive).
+	_ = os.Remove(paths.MirrorCreateLockFile(key))
 	paths.PruneEmptyDirs(filepath.Dir(p), paths.MirrorsDir())
 	return nil
 }
@@ -316,6 +324,13 @@ func OnDisk() ([]string, error) {
 	walkErr := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil || !info.IsDir() {
 			return nil
+		}
+		// A "<key>.tmp" dir is an in-progress (or crashed) creation, not a
+		// mirror: reporting it would let prune's orphan sweep delete a clone
+		// out from under the process building it. Crashed leftovers are
+		// reclaimed by the next Create of that key, under the creation lock.
+		if strings.HasSuffix(info.Name(), ".tmp") {
+			return filepath.SkipDir
 		}
 		if s, err := os.Stat(filepath.Join(p, ".git")); err == nil && s.IsDir() {
 			rel, err := filepath.Rel(root, p)
@@ -360,12 +375,38 @@ type Lock struct{ inner *flock.Flock }
 // operations, and gc; shared for workspace creation (many clones may read
 // concurrently, but never during a repack). Callers needing both modes use
 // two separate acquisitions, never an in-place upgrade (deadlocks). Returns
-// ErrLocked on timeout.
+// ErrLocked on timeout, and an error when the mirror is not on disk — the
+// lockfile lives in the mirror's .git, and creating directories here would
+// fabricate the very marker Exists() trusts, turning a locked-but-absent
+// mirror into a permanently poisoned half-mirror.
 func AcquireLock(key string, exclusive bool, timeout time.Duration) (*Lock, error) {
 	p := paths.MirrorLockFile(key)
+	if fi, err := os.Stat(filepath.Dir(p)); err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("mirror %s is not on disk (removed concurrently?)", key)
+	}
+	return flockWithTimeout(p, exclusive, timeout)
+}
+
+// createLockTimeout bounds how long a creation loser waits for the winner's
+// clone. First clones of large repos legitimately take many minutes, and the
+// loser needs the mirror anyway, so waiting is the correct behavior.
+const createLockTimeout = 30 * time.Minute
+
+// acquireCreateLock takes the mirror's creation lock — a sibling file, since
+// the mirror (and its in-repo lockfile) doesn't exist yet.
+func acquireCreateLock(key string, timeout time.Duration) (*Lock, error) {
+	p := paths.MirrorCreateLockFile(key)
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		return nil, err
 	}
+	return flockWithTimeout(p, true, timeout)
+}
+
+// flockWithTimeout polls for the flock at p until timeout. gofrs/flock's
+// TryLockContext reports a deadline as (false, ctx.Err()), so the timeout is
+// translated to ErrLocked here — callers classify lock contention with
+// errors.Is(err, ErrLocked).
+func flockWithTimeout(p string, exclusive bool, timeout time.Duration) (*Lock, error) {
 	l := flock.New(p)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -379,6 +420,9 @@ func AcquireLock(key string, exclusive bool, timeout time.Duration) (*Lock, erro
 		ok, err = l.TryRLockContext(ctx, 100*time.Millisecond)
 	}
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, ErrLocked
+		}
 		return nil, err
 	}
 	if !ok {

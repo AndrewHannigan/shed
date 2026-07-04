@@ -166,6 +166,12 @@ func WithLock(timeout time.Duration, fn func(*Config) error) error {
 	defer cancel()
 	locked, err := lock.TryLockContext(ctx, 100*time.Millisecond)
 	if err != nil {
+		// flock reports a timeout as (false, ctx.Err()), so the deadline is
+		// what actually signals contention — translate it so callers'
+		// errors.Is(err, ErrLocked) classification works.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return ErrLocked
+		}
 		return err
 	}
 	if !locked {

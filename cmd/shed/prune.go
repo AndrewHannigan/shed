@@ -104,7 +104,16 @@ func runPrune(dryRun, force, yes bool, ifOlderThan time.Duration) error {
 	var plans []prunePlan
 	var skipped, kept, failed int
 	for _, i := range infos {
-		host, repo, ok := ghRepoFromName(i.Name)
+		// The gh slug comes from the repo's upstream identity, not its catalog
+		// name: a track-pinned repo's name carries an "@<track>" suffix that
+		// gh would reject as an invalid OWNER/REPO.
+		slugSource := i.Name
+		if r := c.FindByName(i.Name); r != nil {
+			if k, err := r.MirrorKey(); err == nil {
+				slugSource = k
+			}
+		}
+		host, repo, ok := ghRepoFromName(slugSource)
 		if !ok {
 			fmt.Fprintf(os.Stderr, "warning: skipping %s: cannot derive a GitHub repo from %q\n", i.Branch, i.Name)
 			failed++
@@ -353,10 +362,16 @@ func countNoun(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// ghRepoFromName splits a workspace repo name ("host/owner/repo") into the
-// GitHub host and the "owner/repo" slug gh expects. ok is false unless the
-// name has a host plus an owner/repo path. Pure, so it is unit-testable.
+// ghRepoFromName splits a workspace repo name ("host/owner/repo", possibly
+// with an "@<track>" suffix on the leaf) into the GitHub host and the
+// "owner/repo" slug gh expects. The suffix is trimmed as a fallback for
+// workspaces whose config entry is gone — the caller prefers the entry's
+// URL-derived identity when one exists. ok is false unless the name has a
+// host plus an owner/repo path. Pure, so it is unit-testable.
 func ghRepoFromName(name string) (host, repo string, ok bool) {
+	if at := strings.Index(name, "@"); at >= 0 {
+		name = name[:at]
+	}
 	h, rest, found := strings.Cut(name, "/")
 	if !found || h == "" || !strings.Contains(rest, "/") {
 		return "", "", false

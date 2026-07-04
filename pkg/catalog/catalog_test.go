@@ -420,3 +420,64 @@ func TestTagCatalogNamedDetach(t *testing.T) {
 		t.Errorf("status should name the tag detach, got:\n%s", out)
 	}
 }
+
+// A catalog left writable by an interrupted prior pass (killed between
+// UnlockTree and LockTree) must be re-locked by the next Ensure, even though
+// nothing else changed — the skip-if-current fast path must not preserve a
+// writable "read-only" tree forever.
+func TestEnsureRelocksInterruptedTree(t *testing.T) {
+	setup(t)
+	const name = key
+	if _, err := Ensure(key, name, Ref{Short: "main"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the crash window: tree unlocked, nothing else wrong.
+	if err := UnlockTree(name); err != nil {
+		t.Fatal(err)
+	}
+	if !treeWritable(name) {
+		t.Fatal("test setup: tree should read as writable after UnlockTree")
+	}
+
+	if _, err := Ensure(key, name, Ref{Short: "main"}, nil); err != nil {
+		t.Fatalf("Ensure on an unlocked-but-current catalog: %v", err)
+	}
+	if treeWritable(name) {
+		t.Error("Ensure should have re-locked the interrupted tree")
+	}
+	fi, err := os.Stat(filepath.Join(paths.CatalogPath(name), "a.txt"))
+	if err != nil || fi.Mode().Perm()&0222 != 0 {
+		t.Errorf("files should be read-only again, mode=%v err=%v", fi.Mode(), err)
+	}
+}
+
+// Tracked files modified or deleted in place (HEAD untouched) are healed by
+// the next Ensure — the skip-if-current fast path must not preserve a
+// corrupted checkout that workspaces would then inherit.
+func TestEnsureHealsDirtyTree(t *testing.T) {
+	setup(t)
+	const name = key
+	if _, err := Ensure(key, name, Ref{Short: "main"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := paths.CatalogPath(name)
+
+	// Agent mischief: make the tree writable and corrupt a tracked file.
+	if err := UnlockTree(name); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("vandalized"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Ensure(key, name, Ref{Short: "main"}, nil); err != nil {
+		t.Fatalf("Ensure on a dirty catalog: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if err != nil || string(data) != "1" {
+		t.Errorf("tracked file should be restored to upstream content, got %q (err=%v)", data, err)
+	}
+	if treeWritable(name) {
+		t.Error("healed catalog should be locked again")
+	}
+}

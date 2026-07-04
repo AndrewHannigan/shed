@@ -60,12 +60,11 @@ func Exists(name, branch string) bool {
 // Source describes the catalog repo a new workspace forks from, resolved by
 // the caller from config + the synced mirror.
 type Source struct {
-	Repo       string            // catalog repo name, e.g. "github.com/foo/bar@v2-7-stable"
-	MirrorKey  string            // mirror identity, e.g. "github.com/foo/bar"
-	Track      string            // short name of the ref the catalog checks out
-	TrackIsTag bool              // the catalog is a frozen tag checkout
-	URL        string            // real upstream URL — becomes the workspace's origin
-	Git        map[string]string // per-repo git config seeded at clone time
+	Repo      string            // catalog repo name, e.g. "github.com/foo/bar@v2-7-stable"
+	MirrorKey string            // mirror identity, e.g. "github.com/foo/bar"
+	Track     string            // short name of the ref the catalog checks out
+	URL       string            // real upstream URL — becomes the workspace's origin
+	Git       map[string]string // per-repo git config seeded at clone time
 }
 
 // New creates a new workspace: a plain `git clone` of the catalog repo
@@ -110,7 +109,7 @@ func New(src Source, name, base string) (path string, warnings []string, err err
 		return "", nil, fmt.Errorf("repo not present; run `shed sync %s` first", src.Repo)
 	}
 	wsPath := PathFor(src.Repo, name)
-	if err := clearHalfCreated(wsPath, src); err != nil {
+	if err := clearHalfCreated(wsPath); err != nil {
 		return "", nil, err
 	}
 
@@ -130,6 +129,19 @@ func New(src Source, name, base string) (path string, warnings []string, err err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(wsPath), 0755); err != nil {
+		return "", nil, err
+	}
+	// Claim the destination atomically: two concurrent creations of the same
+	// name both pass the stat-based checks above, and the loser's clone
+	// failing on "already exists" must never be answered by deleting the
+	// winner's live workspace. Mkdir is the arbiter — exactly one process
+	// owns the path from here on, and every cleanup below removes only a
+	// directory this process created. git clones happily into an existing
+	// empty directory.
+	if err := os.Mkdir(wsPath, 0755); err != nil {
+		if os.IsExist(err) {
+			return "", nil, fmt.Errorf("workspace already exists at %s (created concurrently?)", wsPath)
+		}
 		return "", nil, err
 	}
 	if err := cloneWithRetry(src, plan, wsPath); err != nil {
@@ -225,16 +237,22 @@ func planCheckout(src Source, name, base string) (checkoutPlan, error) {
 	return checkoutPlan{}, fmt.Errorf("base %q not found upstream (no such branch or tag)", target)
 }
 
-// cloneWithRetry clones the catalog into dest, retrying once after a cleanup
-// — insurance against losing a race with a rogue (agent-run) gc repacking the
+// cloneWithRetry clones the catalog into dest (an empty directory this
+// process already claimed via Mkdir), retrying once after a cleanup —
+// insurance against losing a race with a rogue (agent-run) gc repacking the
 // mirror mid-clone; shed's own gc never runs while creation holds the shared
-// lock.
+// lock. The re-claim between attempts keeps the Mkdir arbitration honest: if
+// another process takes the path the moment we release it, we back off with
+// the original error rather than touch their directory.
 func cloneWithRetry(src Source, plan checkoutPlan, dest string) error {
 	err := runClone(src, plan, dest)
 	if err == nil {
 		return nil
 	}
 	os.RemoveAll(dest)
+	if mkErr := os.Mkdir(dest, 0755); mkErr != nil {
+		return err
+	}
 	if err2 := runClone(src, plan, dest); err2 == nil {
 		return nil
 	}
@@ -274,7 +292,7 @@ func cloneArgs(catalogPath, branch, dest string, gitConfig map[string]string) []
 // between clone and `remote set-url` — the mirror's pre-receive hook keeps
 // any push there failing loudly, and here it is repaired by replacement.
 // Anything else that exists is a real workspace and an error.
-func clearHalfCreated(wsPath string, src Source) error {
+func clearHalfCreated(wsPath string) error {
 	if _, err := os.Stat(wsPath); err != nil {
 		return nil // nothing there
 	}

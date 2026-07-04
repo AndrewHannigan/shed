@@ -162,6 +162,14 @@ func Ensure(mirrorKey, name string, ref Ref, gitConfig map[string]string) (note 
 
 	unlocked := created // create leaves the tree writable until the final lock
 	if !created {
+		// A writable root is the fingerprint of an interrupted prior pass
+		// (killed between UnlockTree and LockTree): LockTree re-locks the
+		// root only after every child, so a fully locked tree always has a
+		// read-only root. Treat it as unlocked so the final LockTree below
+		// re-establishes the invariant instead of skipping forever.
+		if treeWritable(name) {
+			unlocked = true
+		}
 		u, err := repair(name, ref)
 		if err != nil {
 			return "", err
@@ -225,7 +233,11 @@ func create(mirrorKey, name string, ref Ref) error {
 		if err := gitx.RunEnv(mirrorDir, lfsSkip, "worktree", "add", "--detach", path, target); err != nil {
 			return err
 		}
-		return nameDetach(path, ref.Short)
+		// Purely cosmetic (it only affects what `git status` prints), so a
+		// failure — e.g. a reftable-backend repo with no logs/HEAD file —
+		// must not fail catalog creation and leave the tree half-made.
+		_ = nameDetach(path, ref.Short)
+		return nil
 	}
 	// The local branch normally doesn't exist yet (it is created here, pinned
 	// to the upstream ref); after some repair histories it may already exist,
@@ -245,6 +257,12 @@ func create(mirrorKey, name string, ref Ref) error {
 // the entry ourselves (under the mirror's exclusive lock) makes status read
 // "HEAD detached at <name>" — the named detach the tag tier promises.
 func nameDetach(path, name string) error {
+	// The append below assumes the files reflog backend; on a reftable-backend
+	// repo (git >= 2.45 opt-in) a hand-written logs/HEAD would be ignored —
+	// skip rather than plant a stray file.
+	if backend, err := gitx.Output(path, "config", "extensions.refstorage"); err == nil && backend == "reftable" {
+		return nil
+	}
 	sha, ok := gitx.RevParse(path, "HEAD")
 	if !ok {
 		return fmt.Errorf("name detach: HEAD does not resolve in %s", path)
@@ -281,27 +299,45 @@ func repair(name string, ref Ref) (unlocked bool, err error) {
 		_ = os.Remove(filepath.Join(gitDir, "index.lock"))
 	}
 
-	if ref.IsTag {
-		return false, nil // detached is the designed state; update handles drift
-	}
-	cur, cerr := gitx.Output(path, "symbolic-ref", "--short", "HEAD")
-	if cerr == nil && cur == ref.Short {
-		return false, nil
-	}
-	// The worktree is detached or on the wrong branch (an agent ran checkout
-	// inside the read-only catalog). Put it back on its designated branch.
-	if err := UnlockTree(name); err != nil {
-		return false, fmt.Errorf("chmod u+w: %w", err)
-	}
-	if err := gitx.RunEnv(path, lfsSkip, "checkout", "--force", ref.Short); err != nil {
-		// The branch itself may be gone (deleted from inside the worktree);
-		// recreate it at the upstream ref.
-		if err2 := gitx.RunEnv(path, lfsSkip, "checkout", "--force", "-B", ref.Short,
-			"refs/remotes/origin/"+ref.Short); err2 != nil {
-			return true, err
+	if !ref.IsTag {
+		// Detached or on the wrong branch (an agent ran checkout inside the
+		// read-only catalog): put it back on its designated branch.
+		cur, cerr := gitx.Output(path, "symbolic-ref", "--short", "HEAD")
+		if cerr != nil || cur != ref.Short {
+			if err := UnlockTree(name); err != nil {
+				return false, fmt.Errorf("chmod u+w: %w", err)
+			}
+			unlocked = true
+			if err := gitx.RunEnv(path, lfsSkip, "checkout", "--force", ref.Short); err != nil {
+				// The branch itself may be gone (deleted from inside the
+				// worktree); recreate it at the upstream ref.
+				if err2 := gitx.RunEnv(path, lfsSkip, "checkout", "--force", "-B", ref.Short,
+					"refs/remotes/origin/"+ref.Short); err2 != nil {
+					return unlocked, err
+				}
+			}
 		}
 	}
-	return true, nil
+
+	// Tracked files modified or deleted in place (an agent that chmod'd the
+	// tree writable) leave HEAD untouched, so the skip-if-current fast path
+	// would preserve the damage forever. One status probe per sync keeps the
+	// catalog self-healing; untracked files are ignored — they don't corrupt
+	// tracked content, and the old model's forced checkout left them alone
+	// too.
+	dirty, derr := gitx.Output(path, "status", "--porcelain", "--untracked-files=no")
+	if derr == nil && dirty != "" {
+		if !unlocked {
+			if err := UnlockTree(name); err != nil {
+				return false, fmt.Errorf("chmod u+w: %w", err)
+			}
+			unlocked = true
+		}
+		if err := gitx.RunEnv(path, lfsSkip, "reset", "--hard", "HEAD"); err != nil {
+			return unlocked, err
+		}
+	}
+	return unlocked, nil
 }
 
 // update advances the catalog to its upstream ref if it moved. The common
@@ -401,12 +437,44 @@ func LockTree(name string) error { return chmodTree(paths.CatalogPath(name), fal
 // .git pointer, so a subsequent git checkout/merge can write tracked files.
 func UnlockTree(name string) error { return chmodTree(paths.CatalogPath(name), true) }
 
+// treeWritable reports whether the catalog root directory carries the owner
+// write bit. LockTree removes write from the root only after every child, and
+// UnlockTree restores it on the root first — so a writable root is a reliable
+// fingerprint of a tree that is (or may be) not fully locked, whatever
+// interruption produced it.
+func treeWritable(name string) bool {
+	fi, err := os.Stat(paths.CatalogPath(name))
+	return err == nil && fi.Mode().Perm()&0200 != 0
+}
+
 func chmodTree(root string, writable bool) error {
 	gitPath := filepath.Join(root, ".git")
 	gitPathPrefix := gitPath + string(filepath.Separator)
-	return filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+	chmod := func(p string, info os.FileInfo) error {
+		mode := info.Mode().Perm()
+		if writable {
+			mode |= 0200
+		} else {
+			mode &^= 0222
+		}
+		if mode == info.Mode().Perm() {
+			return nil
+		}
+		return os.Chmod(p, mode)
+	}
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		if p == root {
+			// When locking, the root is deliberately chmod'd LAST (below), so
+			// a read-only root always means "every child was locked" — the
+			// invariant treeWritable relies on. When unlocking, the root goes
+			// first anyway (Walk is pre-order) so children can be traversed.
+			if !writable {
+				return nil
+			}
+			return chmod(p, info)
 		}
 		if p == gitPath {
 			// A catalog's .git is a pointer FILE into the mirror. SkipDir from
@@ -421,17 +489,16 @@ func chmodTree(root string, writable bool) error {
 		if strings.HasPrefix(p, gitPathPrefix) {
 			return nil
 		}
-		mode := info.Mode().Perm()
-		if writable {
-			mode |= 0200
-		} else {
-			mode &^= 0222
-		}
-		if mode == info.Mode().Perm() {
-			return nil
-		}
-		return os.Chmod(p, mode)
+		return chmod(p, info)
 	})
+	if err != nil || writable {
+		return err
+	}
+	fi, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	return chmod(root, fi)
 }
 
 // OnDisk returns the names of every catalog-shaped directory under ReposDir

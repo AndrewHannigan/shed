@@ -212,3 +212,32 @@ func TestSyncMirrorJobEmptyUpstream(t *testing.T) {
 		t.Error("catalog should exist after upstream gained commits")
 	}
 }
+
+// A URL that yields no safe mirror identity must fail its repos without
+// touching the disk: joining a raw URL under MirrorsDir could escape it
+// (mirror keys must be validated exactly like repo names).
+func TestSyncMirrorJobRejectsUnsafeURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	for _, url := range []string{
+		"../../../home/user/proj",      // unparseable: raw relative path
+		"https://github.com/../escape", // parseable but traversing
+	} {
+		jobs := groupByMirror([]syncTarget{{name: "github.com/acme/x", url: url}})
+		if len(jobs) != 1 || jobs[0].keyErr == nil {
+			t.Fatalf("url %q: want a job with keyErr, got %+v", url, jobs)
+		}
+		results := syncMirrorJob(jobs[0], nil, 0, nil)
+		if len(results) != 1 || results[0].Status != "error" {
+			t.Fatalf("url %q: want an error result, got %+v", url, results)
+		}
+	}
+	// Nothing was created anywhere under the mirrors root (or outside it).
+	if entries, err := os.ReadDir(paths.MirrorsDir()); err == nil && len(entries) > 0 {
+		t.Fatalf("unsafe URLs must not touch the disk, found %v", entries)
+	}
+	if _, err := os.Stat(paths.InternalDir() + "/escape"); !os.IsNotExist(err) {
+		t.Fatal("a traversing URL escaped MirrorsDir")
+	}
+}

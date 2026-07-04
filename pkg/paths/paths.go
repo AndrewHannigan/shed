@@ -73,6 +73,13 @@ func MirrorLockFile(key string) string {
 	return filepath.Join(MirrorPath(key), ".git", "shed.lock")
 }
 
+// MirrorCreateLockFile is the creation lock for a mirror: a sibling of the
+// mirror directory (it cannot live inside — the mirror doesn't exist yet)
+// that serializes concurrent creations of the same upstream.
+func MirrorCreateLockFile(key string) string {
+	return MirrorPath(key) + ".create.lock"
+}
+
 func MirrorMetaFile(key string) string {
 	return filepath.Join(MirrorPath(key), ".git", "shed.meta")
 }

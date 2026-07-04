@@ -314,7 +314,8 @@ Behavior, in two phases per upstream mirror:
 
   network (one fetch per upstream, however many versions you track):
   1. Create the mirror if missing (fetch-only, tree never checked out;
-     built in a temp dir and renamed into place, so no lock is needed).
+     built in a temp dir and renamed into place, serialized by a creation
+     lock beside the mirror so concurrent first syncs can't collide).
   — under the mirror's exclusive lock —
   2. If --if-older-than D and the last fetch is fresher than D, skip.
   3. git fetch --prune --prune-tags (upstream truth lands in
@@ -526,7 +527,8 @@ Three lock scopes:
                   exclusive, 2s timeout. Held briefly for config edits
                   (add/rm).
 
-  per-mirror      <mirror>/.git/shed.lock
+  per-mirror      <mirror>/.git/shed.lock (plus a sibling
+                  <mirror>.create.lock that serializes first creation)
                   exclusive for sync phases (5min timeout) and for
                   worktree operations and gc (short timeouts — 2s in rm,
                   5s in prune, which skip a busy mirror rather than wait);
