@@ -389,8 +389,11 @@ upstream. Edits happen here.
     exists as an upstream branch, check it out (any upstream branch works,
     fetched straight from the local mirror). Otherwise create it off
     <base>, defaulting to the repo's tracked branch or tag — a workspace
-    from airflow@v2-7-stable bases on v2-7-stable. Prints the absolute
-    workspace path on stdout; make changes there, then commit and push.
+    from airflow@v2-7-stable bases on v2-7-stable. In a terminal the steps
+    are narrated on stderr ("syncing <repo>...DONE", "Creating workspace
+    at: <path>"); when piped or captured, the bare absolute path is
+    printed on stdout so command substitution works. Make changes there,
+    then commit and push.
 
   shed workspace ls [--json]
     Every workspace with repo, branch, dirty state, unpushed-commit count,

@@ -54,7 +54,11 @@ If a branch named <name> exists on origin, checks it out. Otherwise creates
 it off the repo's tracked branch or tag (or --base). shed always attempts a
 sync first so the workspace forks from the freshest code; if that fails
 (offline, auth, upstream down) it warns and forks from the last synced state.
-Prints the workspace path on stdout.`,
+
+In a terminal, progress lines ("syncing <repo>...DONE", "Creating workspace
+at: <path>") narrate the steps on stderr. When output is piped or captured,
+the bare workspace path is printed on stdout, so 'cd "$(shed workspace new
+<repo> <name>)"' works.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorkspaceNew(args[0], args[1], base)
@@ -115,14 +119,32 @@ func runWorkspaceNew(name, branch, base string) error {
 	// already exists, warn and fall back to the last synced state — graceful
 	// degradation, so `new` still works offline; only hard-fail when there is
 	// nothing on disk to fork from.
-	fmt.Fprintf(os.Stderr, "syncing %s...\n", name)
-	// A single repo refresh, so streaming git's progress meter can't interleave;
-	// show it when interactive (nil when output is piped — see isTerminal).
+	//
+	// A single repo refresh, so streaming git's progress meter can't
+	// interleave; show it when interactive (nil when output is piped — see
+	// isTerminal). Both modes end with one "syncing <repo>...DONE" (or
+	// FAILED) line: quiet mode prints the header up front and completes it in
+	// place, while interactive mode lets git's meter narrate first — a
+	// leading header would either be clobbered by the meter's \r redraws or
+	// need repeating — and states the labeled verdict after.
 	var progress io.Writer
 	if isTerminal(os.Stderr) {
 		progress = os.Stderr
+	} else {
+		fmt.Fprintf(os.Stderr, "syncing %s...", name)
 	}
-	if res := syncSingle(syncTarget{name, repo.URL, repo.Track, repo.Git}, progress); res.Status == "error" || res.Status == "gone" {
+	res := syncSingle(syncTarget{name, repo.URL, repo.Track, repo.Git}, progress)
+	syncFailed := res.Status == "error" || res.Status == "gone"
+	verdict := "DONE"
+	if syncFailed {
+		verdict = "FAILED"
+	}
+	if progress != nil {
+		fmt.Fprintf(os.Stderr, "syncing %s...%s\n", name, verdict)
+	} else {
+		fmt.Fprintln(os.Stderr, verdict)
+	}
+	if syncFailed {
 		if !catalog.Valid(name) {
 			if res.locked {
 				return errs.New(errs.Locked, "could not sync %s: %s", name, res.Error)
@@ -135,6 +157,7 @@ func runWorkspaceNew(name, branch, base string) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
+	fmt.Fprintf(os.Stderr, "Creating workspace at: %s\n", workspace.PathFor(name, branch))
 	path, warnings, err := workspace.New(src, branch, base)
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
@@ -151,7 +174,13 @@ func runWorkspaceNew(name, branch, base string) error {
 	// hook recorded. A failure here never fails the create — resume is just
 	// unavailable for an unlinked workspace.
 	finalizeSessionLink(name, branch)
-	fmt.Println(path)
+	// The bare path on stdout is the machine-readable contract — it is what
+	// makes `cd "$(shed ws new …)"` and agent capture work. Interactive
+	// terminals already saw the "Creating workspace at:" line, so the bare
+	// path is emitted only when stdout is being piped or captured.
+	if !isTerminal(os.Stdout) {
+		fmt.Println(path)
+	}
 	return nil
 }
 
