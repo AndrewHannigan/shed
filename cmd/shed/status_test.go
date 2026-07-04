@@ -3,24 +3,30 @@ package main
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 )
 
-// mkMeta creates a stored repo dir and writes its meta sidecar. Requires an
-// isolated HOME (t.Setenv) so it never touches the real library.
-func mkMeta(t *testing.T, name string, m repostore.Meta) {
+// mkMeta creates a mirror's .git dir and writes its meta sidecar with one
+// catalog record under the repo's name. The repo name doubles as the mirror
+// key (the URL-derived host/owner/repo path) for these default-branch repos.
+// Requires an isolated HOME (t.Setenv) so it never touches the real library.
+func mkMeta(t *testing.T, name string, m mirror.CatalogStatus) {
 	t.Helper()
-	if err := os.MkdirAll(paths.RepoStorePath(name), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(paths.MirrorPath(name), ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := repostore.SaveMeta(name, &m); err != nil {
+	if err := mirror.SaveMeta(name, &mirror.Meta{
+		LastSyncAt: m.LastSyncAt,
+		Catalogs:   map[string]mirror.CatalogStatus{name: m},
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -71,10 +77,10 @@ func TestCollectSyncFailuresOrdersNewestFirst(t *testing.T) {
 		{URL: "https://github.com/acme/old-fail"},
 		{URL: "https://github.com/acme/new-fail"},
 	}}
-	mkMeta(t, "github.com/acme/ok", repostore.Meta{LastSyncAt: time.Now()})
-	mkMeta(t, "github.com/acme/old-fail", repostore.Meta{
+	mkMeta(t, "github.com/acme/ok", mirror.CatalogStatus{LastSyncAt: time.Now()})
+	mkMeta(t, "github.com/acme/old-fail", mirror.CatalogStatus{
 		LastSyncAt: time.Now().Add(-48 * time.Hour), LastError: "boom", LastErrorAt: time.Now().Add(-10 * time.Hour)})
-	mkMeta(t, "github.com/acme/new-fail", repostore.Meta{
+	mkMeta(t, "github.com/acme/new-fail", mirror.CatalogStatus{
 		LastSyncAt: time.Now().Add(-2 * time.Hour), LastError: "boom", LastErrorAt: time.Now().Add(-1 * time.Hour)})
 
 	got := collectSyncFailures(c)
@@ -97,14 +103,14 @@ func TestSyncHealthBanner(t *testing.T) {
 	if err := config.Save(c); err != nil {
 		t.Fatal(err)
 	}
-	mkMeta(t, "github.com/acme/ok", repostore.Meta{LastSyncAt: time.Now()})
-	mkMeta(t, "github.com/acme/broken", repostore.Meta{LastSyncAt: time.Now()})
+	mkMeta(t, "github.com/acme/ok", mirror.CatalogStatus{LastSyncAt: time.Now()})
+	mkMeta(t, "github.com/acme/broken", mirror.CatalogStatus{LastSyncAt: time.Now()})
 
 	if b := syncHealthBanner(); b != "" {
 		t.Fatalf("expected no banner when all healthy, got:\n%s", b)
 	}
 
-	mkMeta(t, "github.com/acme/broken", repostore.Meta{
+	mkMeta(t, "github.com/acme/broken", mirror.CatalogStatus{
 		LastSyncAt: time.Now().Add(-3 * time.Hour), LastError: "git fetch: boom", LastErrorAt: time.Now()})
 	b := syncHealthBanner()
 	if !strings.Contains(b, "STALE STORE") || !strings.Contains(b, "1 of 2") {
@@ -140,7 +146,7 @@ func TestCollectSyncFailuresIncludesFirstSyncErrors(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	const name = "github.com/acme/private"
-	if err := repostore.RecordFirstSyncError(name, "fatal: Authentication failed"); err != nil {
+	if err := mirror.RecordFirstSyncError(name, "fatal: Authentication failed"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,7 +163,7 @@ func TestCollectSyncFailuresIncludesFirstSyncErrors(t *testing.T) {
 
 	// Once it syncs successfully the standalone record is cleared, so it no
 	// longer counts as a failure.
-	repostore.ClearFirstSyncError(name)
+	mirror.ClearFirstSyncError(name)
 	if fails := collectSyncFailures(c); len(fails) != 0 {
 		t.Fatalf("expected no failures after clear, got %+v", fails)
 	}

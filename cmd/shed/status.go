@@ -12,8 +12,8 @@ import (
 
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 )
 
 func newStatusCmd() *cobra.Command {
@@ -57,7 +57,7 @@ func collectSyncFailures(c *config.Config) []syncFailure {
 		if err != nil {
 			continue
 		}
-		m := loadRepoFailure(name)
+		m := loadRepoFailure(&r, name)
 		if m == nil {
 			continue
 		}
@@ -72,16 +72,20 @@ func collectSyncFailures(c *config.Config) []syncFailure {
 	return out
 }
 
-// loadRepoFailure returns the active failure for a repo — from the meta
-// sidecar when the store exists, or from the standalone first-sync store when
-// a failed first clone left no store dir — or nil when the last attempt was
-// clean. The two stores are mutually exclusive in practice: meta exists only
-// once the store does, and a successful sync clears the standalone record.
-func loadRepoFailure(name string) *repostore.Meta {
-	if m, _ := repostore.LoadMeta(name); m != nil && m.LastError != "" {
-		return m
+// loadRepoFailure returns the active failure for a repo — from its mirror's
+// meta (which merges the shared fetch state with the repo's own catalog
+// record) when the mirror exists, or from the standalone first-sync store
+// when a failed first clone left no mirror — or nil when the last attempt was
+// clean. The two stores are mutually exclusive in practice: mirror meta
+// exists only once the mirror does, and a successful sync clears the
+// standalone record.
+func loadRepoFailure(r *config.Repo, name string) *mirror.CatalogStatus {
+	if key, err := r.MirrorKey(); err == nil {
+		if m := mirror.StatusFor(key, name); m != nil && m.LastError != "" {
+			return m
+		}
 	}
-	if m, _ := repostore.LoadFirstSyncError(name); m != nil && m.LastError != "" {
+	if m, _ := mirror.LoadFirstSyncError(name); m != nil && m.LastError != "" {
 		return m
 	}
 	return nil
@@ -112,14 +116,14 @@ func runStatusRepo(c *config.Config, arg string) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	meta, err := repostore.LoadMeta(name)
-	if err != nil {
-		return errs.Wrap(errs.Config, err)
+	var meta *mirror.CatalogStatus
+	if key, err := r.MirrorKey(); err == nil {
+		meta = mirror.StatusFor(key, name)
 	}
-	// A failed first clone leaves no store dir (hence no meta); its error
+	// A failed first clone leaves no mirror (hence no meta); its error
 	// lives in the standalone store. Surface that as the active failure.
 	if meta == nil {
-		if fe, _ := repostore.LoadFirstSyncError(name); fe != nil && fe.LastError != "" {
+		if fe, _ := mirror.LoadFirstSyncError(name); fe != nil && fe.LastError != "" {
 			meta = fe
 		}
 	}

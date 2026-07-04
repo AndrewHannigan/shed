@@ -11,8 +11,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/AndrewHannigan/shed/pkg/config"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 )
 
 const bgSyncWorkerEnv = "SHED_BG_SYNC_WORKER"
@@ -85,11 +85,11 @@ func bgSyncWorker() error {
 
 func everSynced(c *config.Config) bool {
 	for _, r := range c.Repos {
-		name, err := r.ResolvedName()
+		key, err := r.MirrorKey()
 		if err != nil {
 			continue
 		}
-		if meta, _ := repostore.LoadMeta(name); meta != nil {
+		if meta, _ := mirror.LoadMeta(key); meta != nil {
 			return true
 		}
 	}

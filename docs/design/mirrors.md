@@ -1,6 +1,6 @@
 # Design: mirrors — offline workspace creation and multi-version checkouts
 
-Status: proposal
+Status: implemented (pkg/mirror, pkg/catalog, pkg/gitx; sync/workspace/prune rewrites)
 Author: design discussion (branch `claude/workspace-cached-repo-creation-bi8yna`)
 
 ## Invariant

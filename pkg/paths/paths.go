@@ -48,17 +48,46 @@ func ReposDir() string      { return filepath.Join(DataDir(), "repos") }
 func WorkspacesDir() string { return filepath.Join(DataDir(), "workspaces") }
 func LogsDir() string       { return filepath.Join(DataDir(), "logs") }
 
-func BgSyncLockFile() string { return filepath.Join(DataDir(), ".bg-sync.lock") }
+// InternalDir is shed's plumbing bucket. One rule decides what lives here: if
+// shed prints a path for the user or an agent to visit, it is top-level under
+// DataDir; everything else — mirrors, lock files, error records, history —
+// stays under .internal so the user-facing layout is exactly two concepts
+// (repos and workspaces) plus logs.
+func InternalDir() string { return filepath.Join(DataDir(), ".internal") }
+
+// MirrorsDir holds the fetch-only mirror repos: one per unique upstream,
+// shared by every catalog repo tracking that upstream. Mirrors are plumbing —
+// never printed as a destination.
+func MirrorsDir() string { return filepath.Join(InternalDir(), "mirrors") }
+
+// MirrorPath returns the on-disk path for a mirror, keyed by the URL-derived
+// "host/owner/repo" identity (see DefaultName) — never by the raw URL string,
+// so two transports of one upstream share a mirror.
+func MirrorPath(key string) string {
+	return filepath.Join(MirrorsDir(), filepath.FromSlash(key))
+}
+
+// MirrorLockFile and MirrorMetaFile are the mirror's sidecars, kept inside its
+// .git so they live and die with the mirror.
+func MirrorLockFile(key string) string {
+	return filepath.Join(MirrorPath(key), ".git", "shed.lock")
+}
+
+func MirrorMetaFile(key string) string {
+	return filepath.Join(MirrorPath(key), ".git", "shed.meta")
+}
+
+func BgSyncLockFile() string { return filepath.Join(InternalDir(), "bg-sync.lock") }
 func BgSyncLogFile() string  { return filepath.Join(LogsDir(), "bg-sync.log") }
 
 // SyncErrorDir holds standalone failure records for repos that failed their
-// very first sync — before a store dir (and thus its .git/shed.meta sidecar)
+// very first sync — before a mirror (and thus its .git/shed.meta sidecar)
 // ever existed. Kept outside ReposDir so a record can never be mistaken for a
-// populated store by Exists() or Clone().
-func SyncErrorDir() string { return filepath.Join(DataDir(), ".sync-errors") }
+// materialized catalog repo.
+func SyncErrorDir() string { return filepath.Join(InternalDir(), "sync-errors") }
 
 // SyncErrorFile is the JSON failure record for a repo whose first sync failed,
-// keyed by repo name (e.g. "github.com/foo/bar" → ".sync-errors/github.com/foo/bar.json").
+// keyed by repo name (e.g. "github.com/foo/bar" → "sync-errors/github.com/foo/bar.json").
 func SyncErrorFile(name string) string {
 	return filepath.Join(SyncErrorDir(), filepath.FromSlash(name)+".json")
 }
@@ -66,21 +95,14 @@ func SyncErrorFile(name string) string {
 // HistoryFile is the JSON-Lines log of recent shed commands (one event
 // per line). HistoryTrimMarkerFile holds the RFC3339 timestamp of the last
 // trim check, used to debounce truncation of the history file.
-func HistoryFile() string           { return filepath.Join(DataDir(), "history.jsonl") }
-func HistoryTrimMarkerFile() string { return filepath.Join(DataDir(), ".history-trim") }
+func HistoryFile() string           { return filepath.Join(InternalDir(), "history.jsonl") }
+func HistoryTrimMarkerFile() string { return filepath.Join(InternalDir(), "history-trim") }
 
-// RepoStorePath returns the on-disk path for a named stored repo
-// (e.g. "github.com/foo/bar" → "<DataDir>/repos/github.com/foo/bar").
-func RepoStorePath(name string) string {
+// CatalogPath returns the on-disk path for a named catalog repo
+// (e.g. "github.com/foo/bar" or "github.com/foo/bar@v2" →
+// "<DataDir>/repos/github.com/foo/bar[@v2]").
+func CatalogPath(name string) string {
 	return filepath.Join(ReposDir(), filepath.FromSlash(name))
-}
-
-func RepoStoreLockFile(name string) string {
-	return filepath.Join(RepoStorePath(name), ".git", "shed.lock")
-}
-
-func RepoStoreMetaFile(name string) string {
-	return filepath.Join(RepoStorePath(name), ".git", "shed.meta")
 }
 
 // WorkspacePath returns the on-disk path for a (repo, branch) workspace.
@@ -101,8 +123,8 @@ func WorkspaceSessionFile(name, branch string) string {
 // SessionsPendingDir holds short-lived session→workspace intents recorded by
 // the pre-exec hook before `workspace new` runs. `workspace new` finalizes the
 // matching intent into a WorkspaceSessionFile and removes it. Kept under
-// DataDir so it is local state, never confused with a repo or workspace.
-func SessionsPendingDir() string { return filepath.Join(DataDir(), ".sessions-pending") }
+// InternalDir so it is local state, never confused with a repo or workspace.
+func SessionsPendingDir() string { return filepath.Join(InternalDir(), "sessions-pending") }
 
 // SessionPendingFile is the pending-intent record keyed by the (globally
 // unique) workspace name. The name is the unambiguous join key between the
@@ -167,6 +189,73 @@ func ValidateBranch(branch string) error {
 		return fmt.Errorf("branch %q is unsafe: %w", branch, err)
 	}
 	return nil
+}
+
+// TrackKind classifies a config `track` value: a full-ref form pins the kind,
+// a bare short name resolves branch-first (matching `git clone --branch`).
+type TrackKind int
+
+const (
+	TrackAny    TrackKind = iota // bare short name: prefer a branch, fall back to a tag
+	TrackBranch                  // "heads/<name>" form
+	TrackTag                     // "tags/<name>" form
+)
+
+// ParseTrack splits a config `track` value into its short name and kind. The
+// full-ref forms ("heads/2.7.3", "tags/2.7.3") are the escape hatch for
+// branch/tag name collisions and pin the kind; anything else is a short name
+// resolved branch-first. Full-ref forms exist for resolution only — naming and
+// workspace creation use the short name.
+func ParseTrack(track string) (short string, kind TrackKind) {
+	if rest, ok := strings.CutPrefix(track, "heads/"); ok {
+		return rest, TrackBranch
+	}
+	if rest, ok := strings.CutPrefix(track, "tags/"); ok {
+		return rest, TrackTag
+	}
+	return track, TrackAny
+}
+
+// ValidateTrack guards a config `track` value before it reaches any git
+// command or path derivation: the short portion gets the same checks as a
+// branch (no leading "-", safe relative path), applied after stripping an
+// optional heads/ or tags/ prefix.
+func ValidateTrack(track string) error {
+	short, _ := ParseTrack(track)
+	if short == "" {
+		return errors.New("track is empty")
+	}
+	if strings.HasPrefix(short, "-") {
+		return fmt.Errorf("track %q is unsafe: must not start with %q", track, "-")
+	}
+	if err := checkSafeRelPath(short); err != nil {
+		return fmt.Errorf("track %q is unsafe: %w", track, err)
+	}
+	return nil
+}
+
+// SanitizeTrack maps a track's short name to the form that appears in a
+// derived repo name: slashes become "-" so the "@<track>" suffix stays one
+// leaf directory ("release/2.8" → "release-2.8"). The mapping is lossy by
+// design — config remains the source of truth — and config.Validate rejects
+// two tracks that sanitize identically.
+func SanitizeTrack(track string) string {
+	short, _ := ParseTrack(track)
+	return strings.ReplaceAll(short, "/", "-")
+}
+
+// DefaultRepoName returns the default name for a (url, track) pair:
+// "host/path" for the default branch, "host/path@<sanitized-track>" for a
+// tracked ref.
+func DefaultRepoName(rawURL, track string) (string, error) {
+	base, err := DefaultName(rawURL)
+	if err != nil {
+		return "", err
+	}
+	if track == "" {
+		return base, nil
+	}
+	return base + "@" + SanitizeTrack(track), nil
 }
 
 // WriteFileAtomic writes data to path atomically: it writes a sibling temp

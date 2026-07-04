@@ -102,7 +102,7 @@ Commands:
   resume        reopen the agent session that created a workspace
   rm            remove tracked repos or owners
   status        report sync health; show a repo's error and the likely fix
-  sync          fetch tracked repos and re-apply read-only chmod (usually automatic)
+  sync          fetch each upstream once, refresh the read-only repos (usually automatic)
   workspace     {new,ls,rm} of writable workspaces
 
 Topics: agents, auth, concepts, history, init, library, locking, owner, path, prune, sync, workspace
@@ -110,26 +110,42 @@ Topics: agents, auth, concepts, history, init, library, locking, owner, path, pr
 
 	"concepts": `Concepts
 
+You only ever think about two things: repos you read and workspaces
+agents write in. The machinery behind them stays invisible unless you go
+looking.
+
 Library
   The set of repos you've told shed to track. Stored in
   ~/.config/shed/config.toml. Edit via 'shed add/rm/ls'.
 
-Repo store
-  A full clone of one library repo, kept on disk with its working tree
-  marked read-only (chmod -R a-w). One per library entry. Lives under
-  ~/.shed/repos/<host>/<owner>/<repo>/.
+Repo
+  A permanent, browsable, read-only checkout of one library entry, kept
+  with its working tree marked read-only (chmod -R a-w). Lives under
+  ~/.shed/repos/<host>/<owner>/<repo>[@<track>]/. A repo follows its
+  configured 'track': the upstream default branch when unset, or a pinned
+  branch (advances on every sync) or tag (never changes). Several versions
+  of one upstream can sit side by side (airflow, airflow@v2-7-stable,
+  airflow@2.7.3), each independently referenceable.
+
+Mirror (plumbing)
+  Behind the repos, shed keeps one fetch-only mirror per upstream under
+  ~/.shed/.internal/mirrors/. Every version of a repo is a worktree of
+  its mirror, so N versions cost one copy of history and one network
+  fetch per sync. Mirrors are created on demand, never configured, and
+  only surface in sync output and 'shed prune' (which does their upkeep).
 
 Workspace
-  An editable clone of a stored repo, derived via 'git clone --reference'.
-  Identified by (repo, branch). Multiple workspaces may exist per stored
-  repo, even on the same branch. Lives under
-  ~/.shed/workspaces/<host>/<owner>/<repo>/<branch>/.
+  An editable, completely ordinary git clone made from a repo's checkout;
+  its origin points at the real upstream, so committing and pushing work
+  like any clone. Identified by (repo, name). Creation is purely local —
+  objects hardlink from the mirror — so it is fast and works offline.
+  Lives under ~/.shed/workspaces/<host>/<owner>/<repo>[@<track>]/<name>/.
 
 Agent integration
   Per-agent edits that 'shed init' makes so each terminal agent:
   (a) knows shed exists (via a SessionStart hook that injects the
   shed guide into the session context), (b) has filesystem access
-  to the store and workspaces directories, (c) refreshes the store in
+  to the repos and workspaces directories, (c) refreshes the repos in
   the background at session start.
 `,
 
@@ -177,13 +193,22 @@ Reversing integration ('shed init --uninstall')
 
 	"library": `library — manage tracked repos and owners
 
-  shed add <repo> [--name <n>] [--owner|--repo]
+  shed add <repo> [--track <ref>] [--name <n>] [--owner|--repo]
     Add a repo to the library. <repo> may be a full git URL or GitHub
     shorthand: a bare 'owner/repo' or 'owner' is expanded against
     github.com, so 'shed add octocat/Hello-World' works.
     Name defaults to <host>/<owner>/<repo> derived from the URL. --name
     overrides. Fetches the new repo right away (runs a scoped 'sync').
     Exit 3 if the name already exists.
+
+    --track <ref> pins the checkout to a branch or tag instead of the
+    upstream default branch: a branch advances on every sync, a tag never
+    changes. The name gains an '@<track>' suffix (airflow@v2-7-stable), and
+    several versions of one repo can be tracked side by side — they share
+    one mirror on disk, so an extra version costs a checkout, not another
+    copy of history. Bare names prefer a branch over a same-named tag; pin
+    with 'heads/<n>' or 'tags/<n>'. Changing a repo's track is an identity
+    change: remove and re-add. One entry per (url, track) is enforced.
 
     If <repo> is a bare user/org (one path segment, e.g. octocat or
     https://github.com/octocat) it is tracked as an owner instead;
@@ -267,15 +292,15 @@ when you mean an owner specifically. 'shed owner add' is 'shed add --owner',
 and 'shed owner rm' is 'shed rm' restricted to owners.
 `,
 
-	"sync": `sync — fetch repos and re-apply read-only chmod
+	"sync": `sync — fetch each upstream's mirror, refresh the repos
 
   shed sync [<name>...] [--if-older-than <dur>] [--jobs N] [--json]
 
 Before fetching, sync expands any tracked owners in scope: it lists each
 owner's repos via 'gh' and adds new ones to the library, then fetches them
-in the same pass (a brand-new repo has no store, so it is cloned). Naming
-an owner syncs all of its repos. If 'gh' is unavailable, discovery is
-skipped with a warning and already-known repos still sync. See
+in the same pass (a brand-new upstream has no mirror, so it is cloned).
+Naming an owner syncs all of its repos. If 'gh' is unavailable, discovery
+is skipped with a warning and already-known repos still sync. See
 'shed help owner'.
 
 A repo whose remote no longer resolves on fetch (deleted, renamed, or
@@ -284,22 +309,33 @@ counted apart from failures, does not affect the exit code, and is left in
 place with a hint to remove it with 'shed rm'. sync never deletes a repo or
 its workspace on your behalf.
 
-Behavior per repo:
-  1. Clone if missing (with gc.auto=0).
-  2. Acquire exclusive flock on the stored repo (5 min timeout).
-  3. If --if-older-than D and last_sync_at is fresher than D, skip.
-  4. chmod -R u+w on the working tree (excluding .git/) so checkout works.
-  5. git fetch --all --prune --tags
-  6. git checkout --detach --force origin/HEAD (skipped if the remote is
-     empty; GIT_LFS_SKIP_SMUDGE=1 keeps LFS blobs out of the store).
-  7. chmod -R a-w on the working tree (excluding .git/) — read-only again.
-  8. Write .git/shed.meta with new last_sync_at.
+Behavior, in two phases per upstream mirror:
 
-Parallelism via --jobs (default 4). Per-repo locks serialize concurrent
-syncs of the same repo. Aggregate exit:
-  5 if any per-repo lock acquisition timed out
+  network (exclusive lock; one fetch per upstream, however many versions
+  you track):
+  1. Create the mirror if missing (fetch-only, tree never checked out).
+  2. If --if-older-than D and the last fetch is fresher than D, skip.
+  3. git fetch --prune --prune-tags (upstream truth lands in
+     refs/remotes/origin/*, which no checkout can block).
+  4. Refresh the recorded upstream default branch; stamp shed.meta.
+
+  local per repo (deterministic, retryable):
+  5. Repair if needed: a checkout switched off its branch, a stale
+     index.lock, a broken .git pointer — all put back automatically.
+  6. Skip if already at the tracked ref — the common case.
+  7. chmod u+w → fast-forward to the tracked branch (a force-pushed
+     upstream is reported and hard-reset; a tracked tag only moves if the
+     tag itself did) → chmod a-w.
+
+Parallelism via --jobs (default 4), one job per mirror. Per-mirror locks
+serialize concurrent syncs of the same upstream. Aggregate exit:
+  5 if any lock acquisition timed out
   6 if any git fetch/clone failed (a "gone upstream" repo is not a failure)
   else 0
+
+A tracked branch deleted upstream is reported as "track 'x' no longer
+exists upstream". An upstream with no commits yet is the "empty" state,
+not an error; the repo materializes once upstream gains commits.
 
 The background variant ('shed __bg-sync', invoked by Claude's
 SessionStart hook) wraps this with a global flock so multiple sessions
@@ -338,17 +374,20 @@ repo that has not been synced into the store yet.
 
 	"workspace": `workspace — manage writable workspaces
 
-A workspace is a git clone created with --reference against the store,
-sharing object storage but with independent refs. Edits happen here.
+A workspace is a completely ordinary git repo: a plain local clone of a
+repo's checkout (objects hardlink from the shared mirror, so creation is
+fast and never blocked by the network) whose origin points at the real
+upstream. Edits happen here.
 
-  shed workspace new <repo> <branch> [--base <branch>]
-    Syncs the repo first (cloning it into the store if needed), so the
-    workspace forks from up-to-date code; if the sync fails but a store
-    exists, it warns and uses that. Then clones --reference into
-    ~/.shed/workspaces/.../<branch>/. If <branch> exists on origin,
-    check it out. Otherwise create it off <base> (or origin/HEAD). Prints
-    the absolute workspace path on stdout; make changes there, then commit
-    and push.
+  shed workspace new <repo> <name> [--base <branch|tag>]
+    Always attempts a sync first so the workspace forks from the freshest
+    code; if that fails (offline, auth, upstream down), it warns and forks
+    from the last synced state — creation itself is purely local. If <name>
+    exists as an upstream branch, check it out (any upstream branch works,
+    fetched straight from the local mirror). Otherwise create it off
+    <base>, defaulting to the repo's tracked branch or tag — a workspace
+    from airflow@v2-7-stable bases on v2-7-stable. Prints the absolute
+    workspace path on stdout; make changes there, then commit and push.
 
   shed workspace ls [--json]
     Every workspace with repo, branch, dirty state, unpushed-commit count,
@@ -360,9 +399,11 @@ sharing object storage but with independent refs. Edits happen here.
     on one doesn't stop the rest. Refuses with exit 4 if dirty or unpushed
     unless --force.
 
-The workspace's origin remote points at the upstream URL, not the store,
-so 'git push' works normally. New branches have no upstream until your
-first 'git push -u origin <branch>'.
+The workspace's origin remote points at the upstream URL, not anything
+shed-owned, so 'git push' works normally. New branches have no upstream
+until your first 'git push -u origin <branch>'. Repos that use git LFS get
+their blobs pulled right after creation (offline, you get pointer files
+and a warning).
 
 A workspace name must also differ from every repo name, so 'shed path <name>'
 resolves unambiguously to one or the other — see 'shed help path'.
@@ -389,6 +430,17 @@ To bulk-clean workspaces whose work has already landed, see 'shed help prune'.
 
 The merged-PR check is gh-driven, so gh must be installed and authenticated;
 prune fails fast rather than degrade when gh can't report merge status.
+
+prune is also shed's maintenance pass — you never run git upkeep by hand:
+  1. Remove leftover repo checkouts no config entry claims (e.g. after
+     changing a repo's track — an identity change leaves the old dir).
+  2. git gc each mirror (after workspace removal, so less old pack data
+     stays pinned by surviving hardlinked workspaces), plus stale-worktree
+     bookkeeping cleanup.
+  3. Remove mirrors that no config entry references — nothing else ever
+     deletes a mirror.
+The maintenance pass runs even when there are no workspaces (it doesn't
+need gh), and --dry-run previews its removals too.
 `,
 
 	"history": `history — show recent shed commands
@@ -405,7 +457,7 @@ What's recorded
   command exactly as you typed it, with a timestamp.
 
 Storage and truncation
-  Appended to ~/.shed/history.jsonl (one JSON object per line). The log
+  Appended to ~/.shed/.internal/history.jsonl (one JSON object per line). The log
   is trimmed back to the most recent 200 entries, at most once every few
   minutes (a marker file debounces the trim), so it never grows without bound
   and the trim cost isn't paid on every command.
@@ -465,28 +517,33 @@ doesn't, sync exits 6 with the underlying git error.
 
 Three lock scopes:
 
-  global bg-sync  ~/.shed/.bg-sync.lock
+  global bg-sync  ~/.shed/.internal/bg-sync.lock
                   exclusive, non-blocking. Held only by __bg-sync workers.
 
   config          ~/.config/shed/.lock
                   exclusive, 2s timeout. Held briefly for config edits
                   (add/rm).
 
-  per-store-repo  <store>/.git/shed.lock
-                  exclusive (5min timeout) for sync, shared (2s timeout)
-                  for workspace new.
+  per-mirror      <mirror>/.git/shed.lock
+                  exclusive (5min timeout) for sync phases, worktree
+                  operations, and gc; shared (2s timeout) for workspace
+                  creation. Sync releases it between the network phase and
+                  each repo's local update. 'workspace new' uses two
+                  separate acquisitions (sync, then clone), never an
+                  in-place upgrade.
 
-Fixed acquisition order: bg-sync → config → per-repo. No code path
+Fixed acquisition order: bg-sync → config → per-mirror. No code path
 acquires in reverse. flock auto-releases on process exit (including
 SIGKILL).
 
-The read-only enforcement (chmod -R a-w on the store tree) excludes
-.git/, so the lockfile and metadata sidecar remain writable. Sync's
-first action after acquiring its lock is 'chmod -R u+w' to re-enable
-write before checkout.
+The read-only enforcement (chmod -R a-w on each repo tree) excludes its
+.git pointer; the mirror — where the lockfile and metadata sidecar live —
+is never chmod'd. Sync re-enables write on a repo's tree only for the
+moment it fast-forwards, then locks it again.
 
 The chmod is a UX gotcha for cleanup: 'rm -rf ~/.shed/
-repos/<name>' will fail. Run 'chmod -R u+w' first.
+repos/<name>' will fail. Run 'chmod -R u+w' first (or 'shed rm', which
+handles it).
 
 See SPEC §7.1 for the full deadlock-freedom argument.
 `,

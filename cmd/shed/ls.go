@@ -12,10 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AndrewHannigan/shed/pkg/catalog"
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
-	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
@@ -43,6 +43,7 @@ copy is stale — run 'shed status <repo>' for the error and the fix.`,
 type repoRow struct {
 	Name       string `json:"name"`
 	URL        string `json:"url"`
+	Track      string `json:"track,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Path       string `json:"path,omitempty"`
 	LastSyncAt any    `json:"last_sync_at"`
@@ -164,12 +165,16 @@ func collectRepoList(c *config.Config) ([]repoRow, []ownerRow, error) {
 		if err != nil {
 			return nil, nil, errs.Wrap(errs.Config, err)
 		}
-		row := repoRow{Name: name, URL: r.URL, Source: r.Source, LastSyncAt: nil}
-		if repostore.Exists(name) {
-			row.Path = paths.RepoStorePath(name)
-			if meta, err := repostore.LoadMeta(name); err == nil && meta != nil {
-				row.LastSyncAt = meta.LastSyncAt.UTC().Format(time.RFC3339)
-				row.LastError = meta.LastError
+		row := repoRow{Name: name, URL: r.URL, Track: r.Track, Source: r.Source, LastSyncAt: nil}
+		if catalog.Exists(name) {
+			row.Path = catalog.Path(name)
+		}
+		if key, err := r.MirrorKey(); err == nil {
+			if st := mirror.StatusFor(key, name); st != nil {
+				if !st.LastSyncAt.IsZero() {
+					row.LastSyncAt = st.LastSyncAt.UTC().Format(time.RFC3339)
+				}
+				row.LastError = st.LastError
 			}
 		}
 		rows = append(rows, row)
@@ -291,9 +296,9 @@ func writeReposSection(out io.Writer, repos []repoRow, indent string, caption bo
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	if showSource {
-		fmt.Fprintln(w, indent+"NAME\tLAST SYNC\tFROM")
+		fmt.Fprintln(w, indent+"NAME\tTRACK\tSYNCED\tFROM")
 	} else {
-		fmt.Fprintln(w, indent+"NAME\tLAST SYNC")
+		fmt.Fprintln(w, indent+"NAME\tTRACK\tSYNCED")
 	}
 	for _, r := range repos {
 		if showSource {
@@ -301,12 +306,21 @@ func writeReposSection(out io.Writer, repos []repoRow, indent string, caption bo
 			if r.Source != "" {
 				source = r.Source
 			}
-			fmt.Fprintf(w, "%s%s\t%s\t%s\n", indent, r.Name, lastSyncLabel(r), source)
+			fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n", indent, r.Name, trackLabel(r), lastSyncLabel(r), source)
 		} else {
-			fmt.Fprintf(w, "%s%s\t%s\n", indent, r.Name, lastSyncLabel(r))
+			fmt.Fprintf(w, "%s%s\t%s\t%s\n", indent, r.Name, trackLabel(r), lastSyncLabel(r))
 		}
 	}
 	w.Flush()
+}
+
+// trackLabel renders a repo's TRACK cell: the pinned branch or tag, or
+// "(default)" for the upstream default branch.
+func trackLabel(r repoRow) string {
+	if r.Track == "" {
+		return "(default)"
+	}
+	return r.Track
 }
 
 // lastSyncLabel renders a repo's last-sync cell: a relative time (or "never"),

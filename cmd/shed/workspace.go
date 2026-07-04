@@ -11,10 +11,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AndrewHannigan/shed/pkg/catalog"
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
+	"github.com/AndrewHannigan/shed/pkg/gitx"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
@@ -36,29 +38,34 @@ func newWorkspaceNewCmd() *cobra.Command {
 	var base string
 	cmd := &cobra.Command{
 		Use:   "new <repo> <name>",
-		Short: "Create a workspace via `git clone --reference`",
-		Long: `new creates a writable clone of the stored repo at
-~/.shed/workspaces/<repo>/<name>/ using
-'git clone --reference' so it shares object storage with the store.
+		Short: "Create a workspace: a plain local clone off the repo's checkout",
+		Long: `new creates a writable clone of the repo at
+~/.shed/workspaces/<repo>/<name>/. The clone is purely local — objects
+hardlink from shed's shared mirror — so creation is fast and works offline;
+its origin is immediately re-pointed at the real upstream, so the workspace
+is an ordinary git repo that pushes to GitHub like any clone.
 
 <name> is the workspace's identity: it is the directory shed owns, it must be
 unique across every repo (so 'shed resume <name>' is unambiguous), and it
 seeds an initial git branch of the same name. The git branch is then yours to
 rename or switch — shed keys on the workspace name, not the live branch.
 
-If a branch named <name> exists on origin, checks it out. Otherwise creates it
-off origin/HEAD (or --base). Prints the workspace path on stdout.`,
+If a branch named <name> exists on origin, checks it out. Otherwise creates
+it off the repo's tracked branch or tag (or --base). shed always attempts a
+sync first so the workspace forks from the freshest code; if that fails
+(offline, auth, upstream down) it warns and forks from the last synced state.
+Prints the workspace path on stdout.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorkspaceNew(args[0], args[1], base)
 		},
 	}
-	cmd.Flags().StringVar(&base, "base", "", "branch to fork from when <branch> is new (default: origin/HEAD)")
+	cmd.Flags().StringVar(&base, "base", "", "branch or tag to fork from when <name> is new (default: the repo's track)")
 	return cmd
 }
 
 func runWorkspaceNew(name, branch, base string) error {
-	if err := repostore.RequireGit(); err != nil {
+	if err := gitx.RequireGit(); err != nil {
 		return errs.Wrap(errs.MissingDep, err)
 	}
 	// Reject an unsafe branch/base up front, before the (network) sync below,
@@ -84,7 +91,10 @@ func runWorkspaceNew(name, branch, base string) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	if workspace.Exists(name, branch) {
+	// A half-created leftover (crash between clone and `remote set-url`) is
+	// repaired by replacement inside workspace.New; only a real workspace is
+	// an "already exists" error.
+	if workspace.Exists(name, branch) && !workspace.HalfCreated(name, branch) {
 		return errs.New(errs.Exists, "workspace already exists at %s", workspace.PathFor(name, branch))
 	}
 	// Workspace names are unique across the entire shed, so `shed resume <name>`
@@ -100,10 +110,11 @@ func runWorkspaceNew(name, branch, base string) error {
 			"workspace name %q collides with repo %s; pick a distinct name so `shed path %s` is unambiguous",
 			branch, repos[0], branch)
 	}
-	// Refresh the store first so the workspace forks from up-to-date code.
-	// syncOne clones the repo if it isn't stored yet. If the sync fails but a
-	// store already exists, fall back to it (so `new` still works offline);
-	// only hard-fail when there is nothing stored to fork from.
+	// ALWAYS attempt a sync first (mirror fetch + catalog fast-forward) so the
+	// workspace forks from the freshest code. If that fails but a synced repo
+	// already exists, warn and fall back to the last synced state — graceful
+	// degradation, so `new` still works offline; only hard-fail when there is
+	// nothing on disk to fork from.
 	fmt.Fprintf(os.Stderr, "syncing %s...\n", name)
 	// A single repo refresh, so streaming git's progress meter can't interleave;
 	// show it when interactive (nil when output is piped — see isTerminal).
@@ -111,18 +122,25 @@ func runWorkspaceNew(name, branch, base string) error {
 	if isTerminal(os.Stderr) {
 		progress = os.Stderr
 	}
-	if res := syncOne(name, repo.URL, repo.Git, 0, progress); res.Status == "error" {
-		if !repostore.Exists(name) {
+	if res := syncSingle(syncTarget{name, repo.URL, repo.Track, repo.Git}, progress); res.Status == "error" || res.Status == "gone" {
+		if !catalog.Valid(name) {
 			if res.locked {
 				return errs.New(errs.Locked, "could not sync %s: %s", name, res.Error)
 			}
 			return errs.New(errs.Network, "could not sync %s: %s", name, res.Error)
 		}
-		fmt.Fprintf(os.Stderr, "warning: could not refresh %s (%s); using existing store\n", name, res.Error)
+		fmt.Fprintf(os.Stderr, "warning: could not refresh %s (%s); using the last synced state\n", name, res.Error)
 	}
-	path, err := workspace.New(name, branch, base, repo.URL, repo.Git)
+	src, err := workspaceSource(repo, name)
 	if err != nil {
-		if errors.Is(err, repostore.ErrLocked) {
+		return errs.Wrap(errs.Config, err)
+	}
+	path, warnings, err := workspace.New(src, branch, base)
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
+	if err != nil {
+		if errors.Is(err, mirror.ErrLocked) {
 			return errs.Wrap(errs.Locked, err)
 		}
 		return errs.Wrap(errs.Network, err)
@@ -135,6 +153,29 @@ func runWorkspaceNew(name, branch, base string) error {
 	finalizeSessionLink(name, branch)
 	fmt.Println(path)
 	return nil
+}
+
+// workspaceSource assembles the workspace.Source for a config repo: its
+// catalog name, mirror identity, and the resolved track the catalog checks
+// out (the default base for new branches). Resolution is purely local —
+// against the mirror's already-fetched refs — so it works offline.
+func workspaceSource(repo *config.Repo, name string) (workspace.Source, error) {
+	key, err := repo.MirrorKey()
+	if err != nil {
+		return workspace.Source{}, err
+	}
+	ref, err := catalog.ResolveTrack(key, repo.Track)
+	if err != nil {
+		return workspace.Source{}, err
+	}
+	return workspace.Source{
+		Repo:       name,
+		MirrorKey:  key,
+		Track:      ref.Short,
+		TrackIsTag: ref.IsTag,
+		URL:        repo.URL,
+		Git:        repo.Git,
+	}, nil
 }
 
 // repoNames returns the resolved names of every repo in the config, skipping

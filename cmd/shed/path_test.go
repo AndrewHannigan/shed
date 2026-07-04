@@ -43,8 +43,8 @@ func TestRunPathRepoByShorthand(t *testing.T) {
 	saveConfig(t, &config.Config{
 		Repos: []config.Repo{{URL: "https://github.com/AndrewHannigan/projects"}},
 	})
-	// repostore.Exists only checks the store dir is present.
-	if err := os.MkdirAll(paths.RepoStorePath(repo), 0755); err != nil {
+	// catalog.Exists only checks the repo dir is present.
+	if err := os.MkdirAll(paths.CatalogPath(repo), 0755); err != nil {
 		t.Fatalf("make store dir: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestRunPathRepoByShorthand(t *testing.T) {
 			t.Fatalf("runPath(projects) = %v, want nil", err)
 		}
 	})
-	if got, want := strings.TrimSpace(out), paths.RepoStorePath(repo); got != want {
+	if got, want := strings.TrimSpace(out), paths.CatalogPath(repo); got != want {
 		t.Errorf("runPath printed %q, want repo store path %q", got, want)
 	}
 }
@@ -170,7 +170,7 @@ func TestRunPathAmbiguousAcrossOwners(t *testing.T) {
 
 	// The owner/repo form disambiguates to exactly one repo.
 	const repo = "github.com/alice/projects"
-	if mkErr := os.MkdirAll(paths.RepoStorePath(repo), 0755); mkErr != nil {
+	if mkErr := os.MkdirAll(paths.CatalogPath(repo), 0755); mkErr != nil {
 		t.Fatalf("make store dir: %v", mkErr)
 	}
 	out := captureStdout(t, func() {
@@ -178,7 +178,7 @@ func TestRunPathAmbiguousAcrossOwners(t *testing.T) {
 			t.Fatalf("runPath(alice/projects) = %v, want nil", err)
 		}
 	})
-	if got, want := strings.TrimSpace(out), paths.RepoStorePath(repo); got != want {
+	if got, want := strings.TrimSpace(out), paths.CatalogPath(repo); got != want {
 		t.Errorf("runPath(alice/projects) = %q, want %q", got, want)
 	}
 }

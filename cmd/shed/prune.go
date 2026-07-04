@@ -10,10 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AndrewHannigan/shed/pkg/catalog"
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
 	"github.com/AndrewHannigan/shed/pkg/forge"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
+	"github.com/AndrewHannigan/shed/pkg/gitx"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
@@ -40,7 +42,14 @@ reflog entry) is older than the given duration, regardless of merge status.
 Workspaces with uncommitted or unpushed changes are skipped so local work is
 never lost; pass --force to remove them anyway. Before deleting, prune lists
 the workspaces and asks for confirmation; pass --yes to skip the prompt or
---dry-run to preview without deleting.`,
+--dry-run to preview without deleting.
+
+prune is also where shed does its own upkeep, so you never run git
+maintenance by hand: leftover repo checkouts that no longer match the config
+(e.g. after changing a repo's track) are removed, each mirror is compacted
+(git gc — after workspace removal, so less old pack data stays pinned), and
+mirrors that no config entry references anymore are deleted — nothing else
+ever deletes a mirror.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPrune(dryRun, force, yes, ifOlderThan)
@@ -60,16 +69,8 @@ type prunePlan struct {
 }
 
 func runPrune(dryRun, force, yes bool, ifOlderThan time.Duration) error {
-	if err := repostore.RequireGit(); err != nil {
+	if err := gitx.RequireGit(); err != nil {
 		return errs.Wrap(errs.MissingDep, err)
-	}
-	// prune leans on gh for the merged-PR check, so fail fast (rather than
-	// degrade) when gh can't tell us which branches are merged.
-	if err := forge.Available(); err != nil {
-		if errors.Is(err, forge.ErrGhMissing) {
-			return errs.Wrap(errs.MissingDep, err)
-		}
-		return errs.Wrap(errs.Network, err)
 	}
 	c, err := config.Load()
 	if err != nil {
@@ -87,7 +88,16 @@ func runPrune(dryRun, force, yes bool, ifOlderThan time.Duration) error {
 	}
 	if len(infos) == 0 {
 		fmt.Println("(no workspaces)")
-		return nil
+		return pruneMaintenance(c, dryRun)
+	}
+	// prune leans on gh for the merged-PR check, so fail fast (rather than
+	// degrade) when gh can't tell us which branches are merged. Checked only
+	// once workspaces exist — the maintenance-only path above never needs gh.
+	if err := forge.Available(); err != nil {
+		if errors.Is(err, forge.ErrGhMissing) {
+			return errs.Wrap(errs.MissingDep, err)
+		}
+		return errs.Wrap(errs.Network, err)
 	}
 
 	now := time.Now()
@@ -174,6 +184,89 @@ func runPrune(dryRun, force, yes bool, ifOlderThan time.Duration) error {
 		parts = append(parts, fmt.Sprintf("%d failed", failed))
 	}
 	fmt.Println(strings.Join(parts, ", "))
+	return pruneMaintenance(c, dryRun)
+}
+
+// pruneMaintenanceLockTimeout bounds how long the maintenance phase waits for
+// a mirror's exclusive lock; a busy mirror (sync or workspace creation in
+// flight) is simply skipped this round.
+const pruneMaintenanceLockTimeout = 5 * time.Second
+
+// pruneMaintenance is the shed-owned upkeep pass, run after workspace
+// removal, in order: (1) remove orphan repo checkouts no config entry claims
+// (the leftover of a changed track — an identity change is remove-and-add);
+// (2) gc each configured mirror under its exclusive lock — repacking after
+// removal minimizes how much old pack data surviving hardlinked workspaces
+// keep pinned — plus `git worktree prune` for stale bookkeeping; (3) remove
+// mirrors that no config entry references — nothing else ever deletes a
+// mirror. All best-effort: a failure is reported and the pass moves on.
+func pruneMaintenance(c *config.Config, dryRun bool) error {
+	known := make(map[string]bool, len(c.Repos))
+	keys := make(map[string]*config.Repo)
+	for i := range c.Repos {
+		if n, err := c.Repos[i].ResolvedName(); err == nil {
+			known[n] = true
+		}
+		if k, err := c.Repos[i].MirrorKey(); err == nil {
+			keys[k] = &c.Repos[i]
+		}
+	}
+
+	// (1) Orphan repo checkouts.
+	if onDisk, err := catalog.OnDisk(); err == nil {
+		for _, name := range onDisk {
+			if known[name] {
+				continue
+			}
+			if dryRun {
+				fmt.Printf("would remove orphan repo checkout %s (not in config)\n", name)
+				continue
+			}
+			// The mirror key is unknowable from the dir alone; catalog.Remove
+			// falls back to a plain delete and each mirror's `worktree prune`
+			// below clears the stale bookkeeping.
+			if err := catalog.Remove("", name); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not remove orphan checkout %s: %v\n", name, err)
+				continue
+			}
+			fmt.Printf("removed orphan repo checkout %s (not in config)\n", name)
+		}
+	}
+
+	// (2) Mirror gc + worktree prune, (3) orphan-mirror removal.
+	onDisk, err := mirror.OnDisk()
+	if err != nil {
+		return nil
+	}
+	for _, key := range onDisk {
+		if _, referenced := keys[key]; !referenced {
+			if dryRun {
+				fmt.Printf("would remove mirror %s (no config entry references it)\n", key)
+				continue
+			}
+			if err := mirror.Remove(key, pruneMaintenanceLockTimeout); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not remove mirror %s: %v\n", key, err)
+				continue
+			}
+			fmt.Printf("removed mirror %s (no config entry references it)\n", key)
+			continue
+		}
+		if dryRun {
+			continue
+		}
+		lock, err := mirror.AcquireLock(key, true, pruneMaintenanceLockTimeout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping maintenance of mirror %s: %v\n", key, err)
+			continue
+		}
+		if err := mirror.Gc(key); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: gc of mirror %s failed: %v\n", key, err)
+		}
+		if err := mirror.PruneWorktrees(key); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: worktree prune of mirror %s failed: %v\n", key, err)
+		}
+		lock.Unlock()
+	}
 	return nil
 }
 

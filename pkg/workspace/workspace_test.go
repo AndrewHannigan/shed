@@ -109,21 +109,27 @@ func TestParseReflogUnix(t *testing.T) {
 
 func TestCloneArgs(t *testing.T) {
 	t.Run("no git config", func(t *testing.T) {
-		got := cloneArgs("/cache", "https://x/y", "main", "/dest", nil)
-		want := []string{"clone", "--reference", "/cache", "--branch", "main", "--", "https://x/y", "/dest"}
+		got := cloneArgs("/repos/x", "main", "/dest", nil)
+		want := []string{"clone", "--branch", "main", "--", "/repos/x", "/dest"}
+		assertArgs(t, got, want)
+	})
+
+	t.Run("no branch clones the catalog's HEAD", func(t *testing.T) {
+		got := cloneArgs("/repos/x", "", "/dest", nil)
+		want := []string{"clone", "--", "/repos/x", "/dest"}
 		assertArgs(t, got, want)
 	})
 
 	t.Run("git config seeded as sorted --config flags before --", func(t *testing.T) {
-		got := cloneArgs("/cache", "https://x/y", "main", "/dest", map[string]string{
+		got := cloneArgs("/repos/x", "main", "/dest", map[string]string{
 			"user.email":     "me@work.com",
 			"core.hooksPath": ".githooks",
 		})
 		want := []string{
-			"clone", "--reference", "/cache", "--branch", "main",
+			"clone", "--branch", "main",
 			"--config", "core.hooksPath=.githooks", // sorted: core before user
 			"--config", "user.email=me@work.com",
-			"--", "https://x/y", "/dest",
+			"--", "/repos/x", "/dest",
 		}
 		assertArgs(t, got, want)
 	})

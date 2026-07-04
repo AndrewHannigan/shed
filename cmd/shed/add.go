@@ -12,8 +12,8 @@ import (
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
 	"github.com/AndrewHannigan/shed/pkg/forge"
+	"github.com/AndrewHannigan/shed/pkg/gitx"
 	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 )
 
 // configLockTimeout bounds how long a config-mutating command waits for the
@@ -22,7 +22,7 @@ import (
 const configLockTimeout = 2 * time.Second
 
 func newAddCmd() *cobra.Command {
-	var name string
+	var name, track string
 	var asOwner, asRepo bool
 	cmd := &cobra.Command{
 		Use:   "add <repo>",
@@ -32,6 +32,14 @@ func newAddCmd() *cobra.Command {
 a bare "owner/repo" or "owner" is expanded against github.com, so
 "shed add octocat/Hello-World" and "shed add octocat"
 both just work.
+
+--track pins the checkout to a branch or tag instead of the default branch:
+a branch advances on every sync, a tag never changes. Several versions of one
+repo can be tracked side by side ("shed add apache/airflow --track
+v2-7-stable" lives next to plain apache/airflow); they share one mirror on
+disk, so extra versions cost a checkout, not another copy of history. The
+name gains an "@<track>" suffix (airflow@v2-7-stable). Bare track names
+prefer a branch over a same-named tag; pin with "heads/<n>" or "tags/<n>".
 
 If <repo> points at a bare user or org (a single path segment, e.g.
 octocat or https://github.com/octocat), it is tracked as an owner instead:
@@ -43,18 +51,24 @@ nothing.
 Detection is automatic from the shape; force it with --owner / --repo.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRepoAdd(args[0], name, asOwner, asRepo)
+			return runRepoAdd(args[0], name, track, asOwner, asRepo)
 		},
 	}
-	cmd.Flags().StringVar(&name, "name", "", "override the default name (derived from URL)")
+	cmd.Flags().StringVar(&name, "name", "", "override the default name (derived from URL and track)")
+	cmd.Flags().StringVar(&track, "track", "", "branch or tag to follow (default: the upstream default branch)")
 	cmd.Flags().BoolVar(&asOwner, "owner", false, "track <repo> as a user/org (discover its repos via gh)")
 	cmd.Flags().BoolVar(&asRepo, "repo", false, "track <repo> as a single repo (default for owner/repo references)")
 	return cmd
 }
 
-func runRepoAdd(input, overrideName string, asOwner, asRepo bool) error {
+func runRepoAdd(input, overrideName, track string, asOwner, asRepo bool) error {
 	if asOwner && asRepo {
 		return errs.New(errs.Config, "--owner and --repo are mutually exclusive")
+	}
+	if track != "" {
+		if err := paths.ValidateTrack(track); err != nil {
+			return errs.Wrap(errs.Config, err)
+		}
 	}
 	// Expand shorthand (e.g. "octocat" or "owner/repo") into a full
 	// URL up front so classification, naming, and the stored config entry all
@@ -69,14 +83,17 @@ func runRepoAdd(input, overrideName string, asOwner, asRepo bool) error {
 		isOwner = detected
 	}
 	if isOwner {
+		if track != "" {
+			return errs.New(errs.Config, "--track applies to a single repo, not an owner")
+		}
 		return runOwnerAdd(url, overrideName)
 	}
-	return runRepoAddOne(url, overrideName)
+	return runRepoAddOne(url, overrideName, track)
 }
 
-func runRepoAddOne(url, overrideName string) error {
+func runRepoAddOne(url, overrideName, track string) error {
 	// Validate URL and derive default name up front so we fail before locking.
-	defaultName, err := paths.DefaultName(url)
+	defaultName, err := paths.DefaultRepoName(url, track)
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
@@ -106,7 +123,7 @@ func runRepoAddOne(url, overrideName string) error {
 				"repo %s collides with workspace %q; rename the workspace or pass --name so `shed path %s` is unambiguous",
 				effectiveName, ws[0], ws[0])
 		}
-		c.Repos = append(c.Repos, config.Repo{URL: url, Name: overrideName})
+		c.Repos = append(c.Repos, config.Repo{URL: url, Name: overrideName, Track: track})
 		return config.Save(c)
 	})
 	if err != nil {
@@ -213,10 +230,10 @@ func ownerEmptyHint(c *config.Config, ownerName string) string {
 // unchanged — add never blocks: the entry is saved regardless and the
 // subsequent sync reports any remaining problem with a protocol-aware fix.
 func reachableURL(url string) string {
-	if repostore.RequireGit() != nil {
+	if gitx.RequireGit() != nil {
 		return url // no git to probe with; sync will report it.
 	}
-	err := repostore.Reachable(url)
+	err := gitx.Reachable(url)
 	if err == nil {
 		return url
 	}
@@ -225,7 +242,7 @@ func reachableURL(url string) string {
 	if !isAuthError(strings.ToLower(err.Error())) {
 		return url
 	}
-	if alt := paths.AlternateProtocolURL(url); alt != "" && repostore.Reachable(alt) == nil {
+	if alt := paths.AlternateProtocolURL(url); alt != "" && gitx.Reachable(alt) == nil {
 		fmt.Printf("note: %s could not authenticate, but %s works — adding it over %s instead.\n",
 			url, alt, transportLabel(alt))
 		return alt

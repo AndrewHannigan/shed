@@ -6,10 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AndrewHannigan/shed/pkg/catalog"
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
-	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
@@ -68,11 +67,11 @@ func runPath(name string) error {
 		return nil
 	case len(repoMatches) == 1:
 		repoName := repoMatches[0]
-		if !repostore.Exists(repoName) {
+		if !catalog.Exists(repoName) {
 			return errs.New(errs.NotFound,
 				"repo %s is not synced yet; run `shed sync %s` first", repoName, name)
 		}
-		fmt.Println(paths.RepoStorePath(repoName))
+		fmt.Println(catalog.Path(repoName))
 		return nil
 	case len(repoMatches) > 1:
 		// Several repos share this leaf (same name under different owners/hosts,

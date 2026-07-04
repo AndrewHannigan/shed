@@ -171,8 +171,9 @@ func initExempt(c *cobra.Command) bool {
 		strings.HasPrefix(c.Name(), "__") || c.HasSubCommands()
 }
 
-const rootLong = `shed maintains a read-only local store of GitHub repos and
-creates writable workspaces from it via 'git clone --reference'.
+const rootLong = `shed maintains read-only local checkouts of GitHub repos —
+backed by one shared mirror per upstream — and carves writable
+workspaces off them with fast, offline-capable local clones.
 
 Designed for terminal coding agents (Claude Code, Cursor, opencode)
 to search across many repos and edit a few.`

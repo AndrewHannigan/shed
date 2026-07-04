@@ -9,9 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AndrewHannigan/shed/pkg/catalog"
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
@@ -170,7 +171,7 @@ func runRepoRmOne(r *config.Repo, force bool) error {
 		return rmOwnedRepo(r, resolved, force, workspaces)
 	}
 
-	if err := removeRepoArtifacts(resolved); err != nil {
+	if err := removeRepoArtifacts(resolved, r); err != nil {
 		return err
 	}
 
@@ -190,7 +191,7 @@ func runRepoRmOne(r *config.Repo, force bool) error {
 // silently removing the config entry (which would be re-created on the next
 // sync), it adds the repo to the owner's Exclude list so it stays gone.
 func rmOwnedRepo(r *config.Repo, resolved string, force bool, workspaces []workspace.Info) error {
-	if err := removeRepoArtifacts(resolved); err != nil {
+	if err := removeRepoArtifacts(resolved, r); err != nil {
 		return err
 	}
 
@@ -291,7 +292,7 @@ func runOwnerRm(o *config.Owner, force bool) error {
 	// Remove on-disk artifacts for each managed repo first, then drop the
 	// owner entry plus all its repo entries from config in one transaction.
 	for _, resolved := range managed {
-		if err := removeRepoArtifacts(resolved); err != nil {
+		if err := removeRepoArtifacts(resolved, c.FindByName(resolved)); err != nil {
 			return err
 		}
 	}
@@ -421,19 +422,43 @@ func readYes() bool {
 	return line == "y" || line == "yes"
 }
 
-// removeRepoArtifacts deletes a repo's workspaces and store from disk (but not
-// its config entry). On-disk artifacts are removed before config so a failure
-// partway through leaves the entry as a record of remaining cleanup.
-func removeRepoArtifacts(resolved string) error {
+// removeRepoArtifacts deletes a repo's workspaces and its read-only checkout
+// from disk (but not its config entry). On-disk artifacts are removed before
+// config so a failure partway through leaves the entry as a record of
+// remaining cleanup. The shared mirror is deliberately left alone — other
+// repos may track the same upstream, and `shed prune` removes mirrors that no
+// config entry references.
+func removeRepoArtifacts(resolved string, repo *config.Repo) error {
 	if err := workspace.RemoveAllForRepo(resolved); err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	if err := repostore.Remove(resolved, configLockTimeout); err != nil {
-		if errors.Is(err, repostore.ErrLocked) {
-			return errs.Wrap(errs.Locked, err)
+	key := ""
+	if repo != nil {
+		if k, err := repo.MirrorKey(); err == nil {
+			key = k
 		}
+	}
+	if key != "" && mirror.Exists(key) {
+		// Under the mirror's exclusive lock so a concurrent sync can't race the
+		// worktree removal.
+		lock, err := mirror.AcquireLock(key, true, configLockTimeout)
+		if err != nil {
+			if errors.Is(err, mirror.ErrLocked) {
+				return errs.Wrap(errs.Locked, err)
+			}
+			return errs.Wrap(errs.Config, err)
+		}
+		rmErr := catalog.Remove(key, resolved)
+		// Drop the repo's sync record so it can't resurface in `shed status`.
+		_ = mirror.DropCatalog(key, resolved)
+		lock.Unlock()
+		if rmErr != nil {
+			return errs.Wrap(errs.Config, rmErr)
+		}
+	} else if err := catalog.Remove(key, resolved); err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
+	mirror.ClearFirstSyncError(resolved)
 	return nil
 }
 
