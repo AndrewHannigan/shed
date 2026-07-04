@@ -402,3 +402,21 @@ func TestLockTreeCoversWholeTree(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The tag catalog's detach is NAMED: `git status` reads "HEAD detached at
+// <tag>", not "Not currently on any branch" (worktree add alone writes no
+// HEAD reflog entry to name it from).
+func TestTagCatalogNamedDetach(t *testing.T) {
+	setup(t)
+	name := key + "@v1"
+	if _, err := Ensure(key, name, Ref{Short: "v1", IsTag: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	out, err := gitx.Output(paths.CatalogPath(name), "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "HEAD detached at v1") {
+		t.Errorf("status should name the tag detach, got:\n%s", out)
+	}
+}

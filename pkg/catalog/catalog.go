@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/AndrewHannigan/shed/pkg/gitx"
 	"github.com/AndrewHannigan/shed/pkg/paths"
@@ -221,7 +222,10 @@ func create(mirrorKey, name string, ref Ref) error {
 		} else if rb, _ := gitx.RefExists(mirrorDir, "refs/remotes/origin/"+ref.Short); rb {
 			target = "tags/" + ref.Short
 		}
-		return gitx.RunEnv(mirrorDir, lfsSkip, "worktree", "add", "--detach", path, target)
+		if err := gitx.RunEnv(mirrorDir, lfsSkip, "worktree", "add", "--detach", path, target); err != nil {
+			return err
+		}
+		return nameDetach(path, ref.Short)
 	}
 	// The local branch normally doesn't exist yet (it is created here, pinned
 	// to the upstream ref); after some repair histories it may already exist,
@@ -231,6 +235,38 @@ func create(mirrorKey, name string, ref Ref) error {
 	}
 	return gitx.RunEnv(mirrorDir, lfsSkip, "worktree", "add", "--track",
 		"-b", ref.Short, path, "origin/"+ref.Short)
+}
+
+// nameDetach appends the HEAD reflog entry a real `git checkout <tag>` would
+// have written. `git worktree add --detach` logs an entry with an empty
+// message, and a same-commit checkout appends nothing — either way `git
+// status` has no "checkout: moving from … to <name>" line to parse, so it
+// reads "Not currently on any branch" instead of naming the tag. Appending
+// the entry ourselves (under the mirror's exclusive lock) makes status read
+// "HEAD detached at <name>" — the named detach the tag tier promises.
+func nameDetach(path, name string) error {
+	sha, ok := gitx.RevParse(path, "HEAD")
+	if !ok {
+		return fmt.Errorf("name detach: HEAD does not resolve in %s", path)
+	}
+	logPath, err := gitx.Output(path, "rev-parse", "--git-path", "logs/HEAD")
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(logPath) {
+		logPath = filepath.Join(path, logPath)
+	}
+	line := fmt.Sprintf("%s %s shed <shed@localhost> %d +0000\tcheckout: moving from %s to %s\n",
+		sha, sha, time.Now().Unix(), sha, name)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(line); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // repair fixes agent-inflicted or crash-inflicted damage on an existing
