@@ -40,8 +40,11 @@ satisfies it (in parentheses).
    and by agents. (multi-checkout, `@` naming)
 5. When I `cd` into a copy and ask git where I am, the answer names the
    branch or tag I'm tracking, not just a hash. (branch worktrees)
-6. Agents can create a workspace instantly, without touching the network —
-   including fully offline (from the last sync). (workspace creation)
+6. Workspace creation is fast and never blocked by the network. Shed
+   always attempts a mirror sync first so the workspace forks from the
+   freshest code; if that fails (offline, auth, upstream down), it warns
+   and creates the workspace anyway from the last synced state — graceful
+   degradation, never a hard failure. (workspace creation)
 7. A workspace is a completely ordinary git repo: normal branching,
    committing, pushing to the real upstream, and its removal is trivial.
    (hardlink clones, `remote set-url`)
@@ -312,9 +315,10 @@ upstream-deleted tags (both verified).
 ### Workspace creation
 
 ```
-1. optional best-effort mirror fetch + catalog ff (same
-   warn-and-proceed-if-stale fallback as today; hard-fail only if no
-   mirror exists at all)
+1. best-effort mirror fetch + catalog ff — ALWAYS attempted, so the
+   workspace forks from the freshest code; on failure, warn and proceed
+   from the last synced state (same graceful degradation as today;
+   hard-fail only if no mirror exists at all)
 2. git clone --branch <base> [--config k=v ...] -- <catalog-path> <dest>
    (objects hardlink from the mirror store through the worktree — verified)
 3. git remote set-url origin <upstream-url>
