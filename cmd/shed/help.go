@@ -390,8 +390,8 @@ upstream. Edits happen here.
     fetched straight from the local mirror). Otherwise create it off
     <base>, defaulting to the repo's tracked branch or tag — a workspace
     from airflow@v2-7-stable bases on v2-7-stable. In a terminal the steps
-    are narrated on stderr ("syncing <repo>...DONE", "Creating workspace
-    at: <path>"); when piped or captured, the bare absolute path is
+    are narrated on stderr ("syncing <repo>...DONE", "Creating
+    workspace: <path>"); when piped or captured, the bare absolute path is
     printed on stdout so command substitution works. Make changes there,
     then commit and push.
 

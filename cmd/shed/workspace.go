@@ -55,8 +55,8 @@ it off the repo's tracked branch or tag (or --base). shed always attempts a
 sync first so the workspace forks from the freshest code; if that fails
 (offline, auth, upstream down) it warns and forks from the last synced state.
 
-In a terminal, progress lines ("syncing <repo>...DONE", "Creating workspace
-at: <path>") narrate the steps on stderr. When output is piped or captured,
+In a terminal, progress lines ("syncing <repo>...DONE", "Creating
+workspace: <path>") narrate the steps on stderr. When output is piped or captured,
 the bare workspace path is printed on stdout, so 'cd "$(shed workspace new
 <repo> <name>)"' works.`,
 		Args: cobra.ExactArgs(2),
@@ -157,7 +157,7 @@ func runWorkspaceNew(name, branch, base string) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	fmt.Fprintf(os.Stderr, "Creating workspace at: %s\n", workspace.PathFor(name, branch))
+	fmt.Fprintf(os.Stderr, "Creating workspace: %s\n", workspace.PathFor(name, branch))
 	path, warnings, err := workspace.New(src, branch, base)
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
@@ -176,7 +176,7 @@ func runWorkspaceNew(name, branch, base string) error {
 	finalizeSessionLink(name, branch)
 	// The bare path on stdout is the machine-readable contract — it is what
 	// makes `cd "$(shed ws new …)"` and agent capture work. Interactive
-	// terminals already saw the "Creating workspace at:" line, so the bare
+	// terminals already saw the "Creating workspace:" line, so the bare
 	// path is emitted only when stdout is being piped or captured.
 	if !isTerminal(os.Stdout) {
 		fmt.Println(path)
