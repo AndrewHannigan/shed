@@ -138,16 +138,20 @@ repos or it bricks every worktree, and bare defaults
 `core.logAllRefUpdates` off, breaking reflog-based labels), and it keeps
 the `.git/`-sidecar layout of today's store code. All verified.
 
-Creation = `git init` (into a temp dir, renamed into place — a kill -9
-mid-creation must not leave a half-mirror that later syncs trust) +
-`remote add origin <url>` + the refspecs above + first fetch. A *clone*
-would create a local default branch and attach HEAD to it — the catalogs'
-namespace. HEAD is then set ref-only to the default branch tip
-(`update-ref --no-deref HEAD`), and re-pointed the same way each sync:
-the tip moves, the tree is never materialized. There is no consumer for a
-mirror working tree — the default-branch catalog is the visible checkout
-— so checking one out would burn checkout IO per sync and a full tree of
-disk for nothing.
+Creation = `git clone --no-checkout` (into a temp dir, renamed into place
+— a kill -9 mid-creation must not leave a half-mirror that later syncs
+trust), which is today's store-creation verb: it sets the remote-tracking
+fetch refspec and `origin/HEAD` automatically, takes `--config` seeds, and
+reuses the existing progress-streaming clone path. Two fixups follow
+(both verified): clone creates a local default branch with HEAD attached
+to it — squarely in the catalogs' namespace — so `update-ref --no-deref
+HEAD <tip>` detaches HEAD without touching the tree, then `branch -D
+<default>` frees the branch name for its catalog worktree. The tag
+refspec is added alongside the default one. Each sync re-points the
+detached HEAD ref-only; the working tree is never materialized. There is
+no consumer for a mirror working tree — the default-branch catalog is the
+visible checkout — so checking one out would burn checkout IO per sync
+and a full tree of disk for nothing.
 
 Creation-time config:
 
@@ -482,11 +486,12 @@ tests of the current scheme):
    plumbing paths; `Track` on `Repo`; `@` name derivation + sanitization;
    `Validate`: name uniqueness, sanitized-path uniqueness, `(url, track)`
    uniqueness, shared-mirror transport warning; track validation.
-2. **Mirror package.** Non-bare `git init` in temp-then-rename, remote +
-   refspecs (remote-tracking heads + forced tags), `--prune --prune-tags`
-   fetch, ref-only detached HEAD (never checked out), origin/HEAD
-   refresh, creation config (worktreeConfig, gc.auto=0), pre-receive
-   reject hook, canonical identity, lock/meta in `.git/`.
+2. **Mirror package.** `git clone --no-checkout` in temp-then-rename
+   (today's creation verb, keeps progress streaming) + detach HEAD
+   ref-only + delete the clone-created default branch; add forced tag
+   refspec; `--prune --prune-tags` fetch; origin/HEAD refresh; creation
+   config (worktreeConfig, gc.auto=0); pre-receive reject hook; canonical
+   identity; lock/meta in `.git/`.
 3. **Catalog package.** Create = `worktree add -b <track>
    origin/<track>` (branch) or `worktree add --detach` + named checkout
    (tag) → tree lock; update = repair pass (wrong branch, stale
