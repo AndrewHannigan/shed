@@ -504,8 +504,9 @@ func resolveSyncTargets(c *config.Config, names []string) ([]syncTarget, error) 
 	for _, name := range names {
 		// A name may be a repo or an owner. Resolve both: a repo expands to
 		// itself, an owner expands to its managed repos. Matching both (a rare
-		// suffix collision — exact names are unique per §4) is ambiguous → exit
-		// 2 asking for the full name, identical to `repo rm` (§5.0).
+		// suffix collision — exact names are unique across the two by config
+		// validation) is ambiguous → exit 2 asking for the full name, the same
+		// treatment `shed rm` gives it.
 		r, repoErr := c.Resolve(name)
 		o, ownerErr := c.ResolveOwner(name)
 		switch {

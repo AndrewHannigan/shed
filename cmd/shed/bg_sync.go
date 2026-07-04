@@ -117,7 +117,7 @@ func configBgInterval() time.Duration {
 }
 
 // bgLogMaxBytes is the size at which openBgLog rotates the bg-sync log so it
-// can't grow unbounded across sessions (SPEC §5.12).
+// can't grow unbounded across sessions.
 const bgLogMaxBytes = 5 << 20 // 5 MB
 
 func openBgLog() (*os.File, error) {

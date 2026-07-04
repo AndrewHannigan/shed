@@ -8,7 +8,8 @@ import (
 	"fmt"
 )
 
-// Exit codes as documented in SPEC §9.
+// Exit codes are part of shed's CLI contract: help text documents them and
+// scripts/hooks match on them, so the values are stable — never renumber.
 const (
 	OK       = 0
 	NotFound = 2

@@ -312,9 +312,9 @@ func (c *Config) ReposForOwner(owner string) []string {
 	return names
 }
 
-// Resolve finds the config entry matching name, per SPEC §5.0: an exact
-// match on the resolved name wins; otherwise an unambiguous suffix match
-// on path-segment ("/") boundaries is used. Returns an errs.Coded with
+// Resolve finds the config entry matching name — the one resolution rule
+// used shed-wide: an exact match on the resolved name wins; otherwise an
+// unambiguous suffix match on path-segment ("/") boundaries is used. Returns an errs.Coded with
 // NotFound when nothing matches or when a suffix matches more than one
 // repo (the message lists the candidates so the user can disambiguate).
 func (c *Config) Resolve(name string) (*Repo, error) {
