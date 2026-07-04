@@ -318,8 +318,9 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr error, mi
 	return r
 }
 
-// syncSingle refreshes one repo — its mirror plus its own catalog — for the
-// `workspace new` and `add` paths, where exactly one repo is in scope.
+// syncSingle refreshes one repo — its mirror plus its own catalog — for
+// `workspace new`, where exactly one repo is in scope (`add` goes through
+// runSync with the new entry's name instead).
 func syncSingle(t syncTarget, progress io.Writer) syncResult {
 	job := groupByMirror([]syncTarget{t})[0]
 	return syncMirrorJob(job, nil, 0, progress)[0]

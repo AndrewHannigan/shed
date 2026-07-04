@@ -1,10 +1,10 @@
 # shed
 
-![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go) ![Status](https://img.shields.io/badge/status-beta-yellow) ![License](https://img.shields.io/badge/license-MIT-green)
+![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go) ![Status](https://img.shields.io/badge/status-beta-yellow) ![License](https://img.shields.io/badge/license-MIT-green)
 
 **git repo management for terminal coding agents.**
 
-**shed** is one standard system all your agents share to locally manage git repos and workspaces — read-only reference repos, isolated writable workspaces, and improved session resumption.
+Every coding agent on your machine needs the same three things from git: fresh code to read, a safe place to write, and no way to trample the other agents. **shed** is the one system they all share for that — always-current, read-only checkouts of the repos you care about, and instant, isolated workspaces for making changes.
 
 <!-- TODO(visual hook): drop a demo GIF/asciinema here — two agents working the same
      repo through shed: each gets its own fresh `shed workspace new`, neither touches the
@@ -12,13 +12,13 @@
      hook; keep it above the fold. -->
 <!-- ![shed in action](docs/demo.gif) -->
 
-- 🤝 **One system, every agent** — All agents manage repos and workspaces the same way, so parallel sessions never step on each other in the same repo.
-- ✍️ **Isolated writable workspaces** — `shed workspace new` gives each session its own clone off the pristine repo; agents edit there, never in your reference copy or each other's. Creation is purely local (objects hardlink from a shared mirror), so it's fast and works offline.
-- 🌱 **Never a stale branch** — every workspace is created from the freshly-synced repo, so an agent never unintentionally works on out-of-date code.
+- 🤝 **One system, every agent** — Claude Code, Cursor, and opencode all manage repos and workspaces the same way, so parallel sessions never step on each other in the same repo.
+- ⚡ **Workspaces in seconds, even offline** — `shed workspace new` is a purely local clone (objects hardlink from a shared per-upstream mirror), with the network never on the critical path. The result is a completely ordinary git repo — branch, commit, and push to GitHub like any clone.
+- 🌱 **Never a stale branch** — repos refresh in the background at session start and again right before every workspace is created, so an agent never unintentionally branches off out-of-date code.
+- 🛡 **A baseline that can't be broken** — repo checkouts are read-only and self-repairing; agents grep and read across the whole catalog, and nothing they do (and nothing shed does in the background) can corrupt the reference copies or lose workspace work.
 - 🗂 **Multiple versions, one repo** — track a branch or tag with `shed add <repo> --track <ref>`; `airflow`, `airflow@v2-7-stable`, and `airflow@2.7.3` sit side by side, sharing one mirror so extra versions cost a checkout, not another copy of history.
-- 🧹 **One-command cleanup** — workspaces pile up fast; `shed prune` reclaims the ones whose work has already landed (merged PR or merged into the default branch) and leaves anything unpushed untouched.
+- 🧹 **Cleanup and upkeep in one command** — `shed prune` reclaims workspaces whose work already landed (merged PR or merged into the default branch), never touches unpushed work, and does all git maintenance behind the scenes — you never run `gc`.
 - 🔁 **Pick up where you left off** — `shed resume <workspace>` reopens the exact agent session that created a workspace — same agent, same session id, same directory — so a half-finished task is one command away.
-- 🧰 **Searchable out of the box** — agents run `rg`, `grep`, `git`, and `gh` across the entire catalog directly.
 - ⚙️ **Zero agent setup** — one `shed init` wires up each agent to use shed automatically.
 
 ---
@@ -44,6 +44,9 @@ shed init
 # add a repo (github shorthand works)
 shed add octocat/Hello-World
 
+# optionally pin extra versions — a branch that follows, or a tag frozen in time
+shed add apache/airflow --track v2-7-stable
+
 # now run claude, cursor-agent, or opencode — your agent knows how to use it
 ```
 
@@ -53,7 +56,7 @@ That's it. Now any of your agents have a consistent system for working with your
 You:   "Fix the broken link in octocat/Hello-World's README"
 Agent: reads ~/.shed/repos/github.com/octocat/Hello-World   (read-only, always fresh)
        → shed workspace new                                 (isolated, off the latest)
-       → edits there, opens a PR                            (store + other agents untouched)
+       → edits there, opens a PR                            (repo + other agents untouched)
 ```
 
 Once branches land, reclaim the workspaces they left behind:
@@ -116,7 +119,7 @@ Curate the library yourself (`add`/`rm`/`ls`); leave the `workspace` commands to
 
 ¹ opencode has no SessionStart shell hook and no path allowlist. Instead, `init` drops a plugin at `~/.config/opencode/plugin/shed.js`, auto-loaded at startup; it runs `shed __bg-sync` and injects the guide into the model's system prompt via opencode's `experimental.chat.system.transform` hook. `shed init --uninstall` deletes the file.
 
-² Cursor's hooks live in `~/.cursor/hooks.json` under `hooks.sessionStart` (a flatter, camelCase shape than Claude's). shed adds two `sessionStart` entries — `shed __session-context --agent cursor` and `shed __bg-sync`. The session-context one prints a `{"additional_context":"…"}` JSON object that Cursor injects into the conversation. Cursor has no per-directory allowlist (like opencode, the `chmod a-w` on `repos/` enforces read-only), so no paths are registered. If a hand-rolled `~/.cursor/plugins/local/shed` plugin is present, `init` removes it so the guide isn't injected twice.
+² Cursor's hooks live in `~/.cursor/hooks.json` under `hooks.sessionStart` (a flatter, camelCase shape than Claude's). shed adds two `sessionStart` entries — `shed __session-context --agent cursor` and `shed __bg-sync`. The session-context one prints a `{"additional_context":"…"}` JSON object that Cursor injects into the conversation. Cursor has no per-directory allowlist (like opencode, the `chmod a-w` on `repos/` enforces read-only), so no paths are registered.
 
 All edits are idempotent and recorded in a sidecar state file, so `shed init --uninstall` removes only what shed added.
 
@@ -234,7 +237,7 @@ Shed does not manage credentials. Every git operation defers to whatever `git cl
 ## Documentation
 
 - `shed help` — curated overview of every command
-- `shed help <topic>` — long-form prose docs on a command or concept (topics: `agents`, `auth`, `concepts`, `history`, `init`, `library`, `locking`, `owner`, `prune`, `sync`, `workspace`)
+- `shed help <topic>` — long-form prose docs on a command or concept (topics: `agents`, `auth`, `concepts`, `history`, `init`, `library`, `locking`, `owner`, `path`, `prune`, `sync`, `workspace`)
 - `shed --help` and `shed <cmd> --help` — flag reference
 
 ## License

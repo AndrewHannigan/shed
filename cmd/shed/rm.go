@@ -20,15 +20,18 @@ func newRmCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "rm <name>...",
-		Short: "Remove tracked repos or owners (config, store on disk, and workspaces)",
+		Short: "Remove tracked repos or owners (config, checkout on disk, and workspaces)",
 		Long: `rm removes one or more tracked repos or owners.
 
-For a repo, this deletes its config entry, its store on disk, and every
-workspace derived from it. When removing it would also delete one or more
-workspaces, rm asks for confirmation first.
+For a repo, this deletes its config entry, its read-only checkout on disk,
+and every workspace derived from it. The shared mirror behind the checkout
+is left in place (other versions of the same upstream may still use it);
+'shed prune' deletes mirrors once nothing references them. When removing a
+repo would also delete one or more workspaces, rm asks for confirmation
+first.
 
 For an owner, this removes the owner entry and every repo it auto-added,
-along with their workspaces and stores. rm asks for confirmation first;
+along with their workspaces and checkouts. rm asks for confirmation first;
 answering no keeps the repos — they stay on disk, just untied from the
 owner (Source cleared) so a later sync no longer manages them.
 
@@ -150,7 +153,7 @@ func runRepoRmOne(r *config.Repo, force bool) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	// Removing a repo also tears down its workspaces and store. If that would
+	// Removing a repo also tears down its workspaces and checkout. If that would
 	// destroy any workspace, confirm first (unless --force).
 	if !force && len(workspaces) > 0 {
 		if !confirmRepoRemoval(resolved, workspaces) {
@@ -183,7 +186,7 @@ func runRepoRmOne(r *config.Repo, force bool) error {
 	if len(workspaces) > 0 {
 		fmt.Printf(", %s", pluralize(len(workspaces), "workspace"))
 	}
-	fmt.Println(", store on disk)")
+	fmt.Println(", checkout on disk)")
 	return nil
 }
 
@@ -238,14 +241,14 @@ func rmOwnedRepo(r *config.Repo, resolved string, force bool, workspaces []works
 	if len(workspaces) > 0 {
 		fmt.Printf(", %s", pluralize(len(workspaces), "workspace"))
 	}
-	fmt.Println(", store on disk)")
+	fmt.Println(", checkout on disk)")
 	fmt.Printf("  note: %s was auto-added by owner %s — it has been added\n", resolved, ownerName)
 	fmt.Printf("        to that owner's exclude list so it won't be re-added on sync.\n")
 	return nil
 }
 
 // runOwnerRm removes an owner entry and every repo it auto-added (Source ==
-// owner). Because that also deletes those repos' workspaces and stores, it
+// owner). Because that also deletes those repos' workspaces and checkouts, it
 // confirms first unless --force: answering no (or running non-interactively)
 // keeps the repos, untied from the owner, via untieOwner. Once removal is
 // confirmed it still refuses to discard unsaved work without --force.
@@ -274,7 +277,7 @@ func runOwnerRm(o *config.Owner, force bool) error {
 		return nil
 	}
 
-	// Removing the owner would delete its repos and their workspaces/stores.
+	// Removing the owner would delete its repos and their workspaces/checkouts.
 	// Confirm first (unless --force); answering no keeps the repos, untied
 	// from the owner.
 	if !force {
@@ -311,7 +314,7 @@ func runOwnerRm(o *config.Owner, force bool) error {
 	if len(workspaces) > 0 {
 		fmt.Printf(", %s", pluralize(len(workspaces), "workspace"))
 	}
-	fmt.Println(", stores on disk)")
+	fmt.Println(", checkouts on disk)")
 	return nil
 }
 
@@ -335,7 +338,7 @@ func blockedWorkspaces(workspaces []workspace.Info) []string {
 }
 
 // untieOwner removes an owner entry but keeps the repos it added, clearing
-// their Source so they become ordinary user-added repos. Workspaces and stores
+// their Source so they become ordinary user-added repos. Workspaces and checkouts
 // are left untouched. This is the "no" answer to the owner-removal prompt:
 // drop the owner, keep everything it managed.
 func untieOwner(ownerName string, repoCount, wsCount int) error {
@@ -374,7 +377,7 @@ func untieOwner(ownerName string, repoCount, wsCount int) error {
 // destroy workspaces, returning true to proceed. When stdin isn't a TTY it
 // refuses rather than destroy workspaces unattended (use --force).
 func confirmRepoRemoval(resolved string, workspaces []workspace.Info) bool {
-	fmt.Fprintf(os.Stderr, "Removing %s will delete %s (and its store on disk).\n",
+	fmt.Fprintf(os.Stderr, "Removing %s will delete %s (and its checkout on disk).\n",
 		resolved, pluralize(len(workspaces), "workspace"))
 	if blocked := blockedWorkspaces(workspaces); len(blocked) > 0 {
 		fmt.Fprintf(os.Stderr, "  %d of them have unsaved work and need --force to delete.\n", len(blocked))
@@ -401,7 +404,7 @@ func confirmOwnerRemoval(ownerName string, managed []string, workspaces []worksp
 	if len(workspaces) > 0 {
 		fmt.Fprintf(os.Stderr, " and %s", pluralize(len(workspaces), "workspace"))
 	}
-	fmt.Fprintln(os.Stderr, " (and their stores on disk).")
+	fmt.Fprintln(os.Stderr, " (and their checkouts on disk).")
 	if blocked := blockedWorkspaces(workspaces); len(blocked) > 0 {
 		fmt.Fprintf(os.Stderr, "  %d of them have unsaved work and need --force to delete.\n", len(blocked))
 	}

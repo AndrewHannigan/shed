@@ -152,8 +152,8 @@ func runOwnerOnlyList(jsonOut bool) error {
 	return nil
 }
 
-// collectRepoList gathers the repo and owner rows behind `ls`, probing the
-// repo store for each tracked repo's last-sync time. The probes are
+// collectRepoList gathers the repo and owner rows behind `ls`, probing each
+// repo's checkout presence and its mirror's meta for the last-sync time. The probes are
 // deliberately cheap (a stat and a small metadata read, no size walk or git
 // subprocess) so this is safe to run on the session-context hot path, where the
 // repo count can be large (a tracked owner may pull in dozens). Workspace state

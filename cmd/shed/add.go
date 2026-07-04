@@ -17,8 +17,8 @@ import (
 )
 
 // configLockTimeout bounds how long a config-mutating command waits for the
-// config (and per-repo store) lock before giving up. Shared by add, rm, and
-// sync.
+// config lock (and, in rm, the mirror lock) before giving up. Shared by add,
+// rm, and sync.
 const configLockTimeout = 2 * time.Second
 
 func newAddCmd() *cobra.Command {

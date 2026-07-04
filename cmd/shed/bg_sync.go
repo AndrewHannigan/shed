@@ -17,9 +17,10 @@ import (
 
 const bgSyncWorkerEnv = "SHED_BG_SYNC_WORKER"
 
-// storeEmptyHint nudges the user to populate an empty store. It is printed to
-// stdout for the plain-stdout agents.
-const storeEmptyHint = "shed: store is empty. Run `shed sync` to fetch your tracked repos."
+// storeEmptyHint nudges the user to run the first sync when repos are
+// tracked but nothing has ever been fetched. It is printed to stdout for the
+// plain-stdout agents.
+const storeEmptyHint = "shed: no repos synced yet. Run `shed sync` to fetch your tracked repos."
 
 func newBgSyncCmd() *cobra.Command {
 	cmd := &cobra.Command{

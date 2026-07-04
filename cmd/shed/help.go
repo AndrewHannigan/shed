@@ -178,8 +178,9 @@ no re-init needed.
 
 Reversing integration ('shed init --uninstall')
   Removes exactly the entries 'shed init' added to each agent's config:
-    - the allowed-directory entries in settings.json / config.toml
-    - the SessionStart hooks (session-context and bg-sync)
+    - the allowed-directory entries in Claude's settings.json
+    - the SessionStart hooks (session-context and bg-sync) / the
+      opencode plugin file
   A sidecar state file (~/.shed/agents.state.json) records which entries
   are shed's, so any entries you added yourself are preserved. This does
   NOT remove the shed binary, and by default leaves ~/.config/shed/ and
@@ -311,9 +312,10 @@ its workspace on your behalf.
 
 Behavior, in two phases per upstream mirror:
 
-  network (exclusive lock; one fetch per upstream, however many versions
-  you track):
-  1. Create the mirror if missing (fetch-only, tree never checked out).
+  network (one fetch per upstream, however many versions you track):
+  1. Create the mirror if missing (fetch-only, tree never checked out;
+     built in a temp dir and renamed into place, so no lock is needed).
+  — under the mirror's exclusive lock —
   2. If --if-older-than D and the last fetch is fresher than D, skip.
   3. git fetch --prune --prune-tags (upstream truth lands in
      refs/remotes/origin/*, which no checkout can block).
@@ -391,7 +393,8 @@ upstream. Edits happen here.
 
   shed workspace ls [--json]
     Every workspace with repo, branch, dirty state, unpushed-commit count,
-    age of the newest file.
+    and last activity (its newest reflog entry — creation, commit, or
+    checkout; the ACTIVE column).
 
   shed workspace rm <name>... [--force]
     Delete the named workspace dirs (names are globally unique). Several
@@ -474,8 +477,8 @@ Supported (auto-detected by config-dir presence):
 For claude, 'shed init' writes (idempotently, recorded in a
 sidecar state file so 'shed init --uninstall' can reverse precisely):
 
-  1. The store + workspaces dirs in the allowed-filesystem-paths
-     setting (additionalDirectories / writable_roots)
+  1. The repos + workspaces dirs in the allowed-filesystem-paths
+     setting (permissions.additionalDirectories)
   2. A SessionStart hook running 'shed __session-context --agent
      <key>', which injects the shed guide into the session context.
      --agent selects the output shape that agent expects (the content is
@@ -490,8 +493,7 @@ shape than Claude's. 'init' adds the same two hooks there (session-
 context + bg-sync); --agent cursor emits a '{"additional_context":"…"}'
 JSON object Cursor injects into the conversation. Cursor has no path
 allowlist (the chmod a-w on repos/ enforces read-only), so no paths are
-registered. A hand-rolled ~/.cursor/plugins/local/shed plugin, if
-present, is removed so the guide isn't injected twice.
+registered.
 
 opencode has no SessionStart hook or path allowlist, so 'init' instead
 drops a plugin at ~/.config/opencode/plugin/shed.js. It runs
@@ -525,12 +527,14 @@ Three lock scopes:
                   (add/rm).
 
   per-mirror      <mirror>/.git/shed.lock
-                  exclusive (5min timeout) for sync phases, worktree
-                  operations, and gc; shared (2s timeout) for workspace
-                  creation. Sync releases it between the network phase and
-                  each repo's local update. 'workspace new' uses two
-                  separate acquisitions (sync, then clone), never an
-                  in-place upgrade.
+                  exclusive for sync phases (5min timeout) and for
+                  worktree operations and gc (short timeouts — 2s in rm,
+                  5s in prune, which skip a busy mirror rather than wait);
+                  shared (2s timeout) for workspace creation. Sync
+                  releases it between the network phase and each repo's
+                  local update. 'workspace new' uses two separate
+                  acquisitions (sync, then clone), never an in-place
+                  upgrade.
 
 Fixed acquisition order: bg-sync → config → per-mirror. No code path
 acquires in reverse. flock auto-releases on process exit (including
@@ -544,7 +548,5 @@ moment it fast-forwards, then locks it again.
 The chmod is a UX gotcha for cleanup: 'rm -rf ~/.shed/
 repos/<name>' will fail. Run 'chmod -R u+w' first (or 'shed rm', which
 handles it).
-
-See SPEC §7.1 for the full deadlock-freedom argument.
 `,
 }

@@ -83,7 +83,7 @@ func TestRunPathPrintsAbsolutePath(t *testing.T) {
 	}
 }
 
-// A repo that is in the config but not yet synced (no store on disk) reports a
+// A repo that is in the config but not yet synced (no checkout on disk) reports a
 // NotFound with the `shed sync` fix, rather than printing a path to a missing
 // directory you'd fail to cd into.
 func TestRunPathRepoNotSynced(t *testing.T) {

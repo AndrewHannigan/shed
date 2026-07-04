@@ -234,8 +234,9 @@ though that's out of scope here.
 
 ### 5. `shed resume`
 
-`shed resume` requires exactly one argument — the workspace name (cobra
-`ExactArgs(1)`). There is no bare/no-args form; listing in-progress work is
+`shed resume` requires exactly one workspace-name argument (enforced by
+hand so a `-- <agent args>` passthrough still parses). There is no
+bare/no-args form; listing in-progress work is
 `shed ls`'s job (which already shows workspaces, and can later be annotated
 with the linked session/agent). Bare `shed resume` errors with usage.
 
