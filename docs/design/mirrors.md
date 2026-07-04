@@ -158,6 +158,9 @@ Creation-time config:
 - **`extensions.worktreeConfig=true`** — per-repo `Git` config on
   catalogs without leaking to the mirror or siblings; on a non-bare repo
   this needs no `core.bare` surgery (verified).
+- **`gc.auto=0`** — not for safety (see the gc section: nothing left to
+  corrupt) but for timing ownership: shed does the mirror's maintenance
+  in prune, on shed's schedule.
 - **A `pre-receive` hook rejecting all pushes.** A half-created workspace
   (crash between clone and `remote set-url`) has a shed-owned path as
   `origin`. Pushes to a checked-out catalog branch are refused natively
@@ -341,25 +344,37 @@ upstream-deleted tags (both verified).
 - Freshness note: step 1 updates mirror + source catalog, not sibling
   catalogs. Accepted — catalogs advance on sync.
 
-### gc: stock git behavior, plus one scheduled pass in prune
+### gc: safe everywhere, scheduled where shed does the maintaining
 
-No tier pins `gc.auto=0`. With this architecture there is nothing gc can
-corrupt, so git's default maintenance runs everywhere:
+Corruption is off the table on every tier, by construction:
 
 - **Mirror** — catalog branches, tag refs, remote-tracking refs, and
   worktree HEADs are all gc reachability roots, so a collection at any
-  moment (auto, or an agent poking a catalog) can never prune what a
+  moment (including an agent poking a catalog) can never prune what a
   catalog needs — verified through `gc --prune=now --aggressive` after an
   upstream force-push. Workspaces are independent hardlink clones: a
   mirror repack costs disk *sharing*, never validity.
 - **Catalogs** — no object store of their own; nothing to collect.
-- **Workspaces** — gc repacks only the workspace's own clone. The worst
-  case is a disk cost, not a correctness one: auto-gc in a long-lived
-  workspace of a huge repo rewrites the hardlinked base into a private
-  copy, reclaimed when the workspace is pruned. Accepted — in exchange,
-  workspaces are 100% stock git and self-maintain like any normal clone.
+- **Workspaces** — gc repacks only the workspace's own clone.
 
-`shed prune` still runs one explicit pass, purely for efficiency ordering:
+Given that, `gc.auto` splits by who does the maintenance:
+
+- **Mirror pins `gc.auto=0`** — not for safety, for timing ownership.
+  Shed maintains the mirror, so shed schedules it: prune's repack
+  ordering stays meaningful, workspace clones never race a repack (gc
+  runs only under the exclusive lock, demoting the clone retry-once to
+  insurance against agent-run gc), bg-sync latency stays flat instead of
+  absorbing a detached auto-gc after a big fetch, and failures surface in
+  prune output rather than as a silent `gc.log` that quietly blocks all
+  future auto-gc.
+- **Workspaces stay stock** — shed never maintains them, so there is no
+  shed timing to transfer; git's own auto-gc keeps a long-lived workspace
+  healthy like any ordinary clone. The worst case is a disk cost, not a
+  correctness one: an auto-gc repack rewrites the hardlinked base into a
+  private copy, reclaimed when the workspace is pruned. Accepted — the
+  price of workspaces being 100% ordinary git repos.
+
+`shed prune` runs the mirror's maintenance:
 
 1. remove landed/aged workspaces (as today)
 2. `git gc` each mirror under its exclusive lock — repacking *after*
@@ -368,10 +383,9 @@ corrupt, so git's default maintenance runs everywhere:
 3. `git worktree prune` each mirror
 4. remove mirrors no config entry references — nothing else deletes them
 
-A workspace clone that loses a race with an auto-repack fails transiently;
-the clone retry-once covers it. The underlying asymmetry that shaped the
-tiers stands: **clone hardlinks, fetch copies** — fine for the ephemeral
-tier, and why the permanent tiers are worktrees instead.
+The underlying asymmetry that shaped the tiers stands: **clone hardlinks,
+fetch copies** — fine for the ephemeral tier, and why the permanent tiers
+are worktrees instead.
 
 ### Catalog removal, zombies, empty upstreams
 
@@ -488,8 +502,8 @@ tests of the current scheme):
    (today's creation verb, keeps progress streaming) + detach HEAD
    ref-only + delete the clone-created default branch; add forced tag
    refspec; `--prune --prune-tags` fetch; origin/HEAD refresh; creation
-   config (worktreeConfig); pre-receive reject hook; canonical identity;
-   lock/meta in `.git/`.
+   config (worktreeConfig, gc.auto=0 for timing ownership); pre-receive
+   reject hook; canonical identity; lock/meta in `.git/`.
 3. **Catalog package.** Create = `worktree add -b <track>
    origin/<track>` (branch) or `worktree add --detach` + named checkout
    (tag) → tree lock; update = repair pass (wrong branch, stale
