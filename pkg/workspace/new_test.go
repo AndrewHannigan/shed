@@ -212,3 +212,43 @@ func TestNewNeverClobbersExistingWorkspace(t *testing.T) {
 		t.Fatalf("existing workspace was clobbered: %q, %v", data, err)
 	}
 }
+
+// A workspace whose branch is a path prefix of another's (e.g. "feature/foo"
+// and "feature/foo/bar") must not be created inside the first workspace's
+// working tree: the nested clone would be invisible to List and would be
+// silently destroyed when the enclosing workspace is removed. New refuses it,
+// and the enclosing workspace stays clean (never sees a nested .git as dirt).
+func TestNewRefusesNestingUnderExistingWorkspace(t *testing.T) {
+	_, src := setupCatalog(t)
+
+	parent, _, err := New(src, "feature/foo", "")
+	if err != nil {
+		t.Fatalf("New(feature/foo): %v", err)
+	}
+
+	// Direct child and a deeper descendant are both refused.
+	for _, nested := range []string{"feature/foo/bar", "feature/foo/a/b/c"} {
+		if _, _, err := New(src, nested, ""); err == nil {
+			t.Fatalf("New(%q) should be refused as nested under feature/foo", nested)
+		} else if !strings.Contains(err.Error(), "feature/foo") {
+			t.Errorf("New(%q) error should name the enclosing workspace, got: %v", nested, err)
+		}
+		if Exists(src.Repo, nested) {
+			t.Errorf("refused nested workspace %q must not exist on disk", nested)
+		}
+	}
+
+	// The enclosing workspace must not have been polluted by a nested clone.
+	if dirty, _ := isDirty(parent); dirty {
+		t.Error("enclosing workspace should stay clean (no nested .git left behind)")
+	}
+
+	// A sibling that merely shares a prefix but does not nest is still allowed,
+	// as is an independent nested-name branch with no enclosing workspace.
+	if _, _, err := New(src, "feature/foobar", ""); err != nil {
+		t.Errorf("New(feature/foobar) sibling should be allowed: %v", err)
+	}
+	if _, _, err := New(src, "other/deep/one", ""); err != nil {
+		t.Errorf("New(other/deep/one) with no enclosing workspace should be allowed: %v", err)
+	}
+}
