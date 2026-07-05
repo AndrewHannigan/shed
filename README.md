@@ -5,16 +5,16 @@
 **git repo management for terminal coding agents.**
 
 <!-- TODO(visual hook): drop a demo GIF/asciinema here — two agents working the same
-     repo through shed: each gets its own fresh `shed workspace new`, neither touches the
+     repo through shed: each gets its own `shed workspace new`, neither touches the
      read-only store, then `shed prune` cleans up. This is the "10-second, read-no-text"
      hook; keep it above the fold. -->
 <!-- ![shed in action](docs/demo.gif) -->
 
-An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. All three have the same root cause: nothing owns the local copies your agents work from. **shed** owns that layer. Agents read from a read-only, always-fresh library and write in cheap disposable workspaces:
+An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. All three have the same root cause: nothing owns the local copies your agents work from. **shed** owns that layer. Agents read from a read-only, always-current library and write in cheap disposable workspaces:
 
 ```text
 You:   "Fix the broken link in octocat/Hello-World's README"
-Agent: reads ~/.shed/repos/github.com/octocat/Hello-World   (read-only, always fresh)
+Agent: reads ~/.shed/repos/github.com/octocat/Hello-World   (read-only, always current)
        → shed workspace new                                 (isolated, off the latest)
        → edits there, opens a PR                            (repo + other agents untouched)
 ```
@@ -90,7 +90,7 @@ The natural first instinct is "just keep a normal clone of each repo and let age
 - **The reference stays trustworthy.** Because the repo checkout is `chmod a-w`, it's never half-edited, never parked on some branch an agent forgot to leave, never carrying stray uncommitted changes. So searching and reading across the catalog always reflects real upstream code, and every new workspace forks from a known-good, current copy — never a stale branch by accident.
 - **Mistakes are cheap.** An agent literally can't corrupt the source of truth. Workspaces are throwaway: if one goes sideways, delete it (or `shed prune`) and the pristine copy is untouched.
 
-So read-only isn't the goal in itself — it's what makes the *writable* workspaces safe to hand out freely. You get a stable baseline to read from **and** isolated, always-fresh scratch space to write in, instead of having to trade one for the other.
+So read-only isn't the goal in itself — it's what makes the *writable* workspaces safe to hand out freely. You get a stable baseline to read from **and** isolated, always-current scratch space to write in, instead of having to trade one for the other.
 
 ## How it's built: one mirror per upstream, three tiers
 
@@ -139,7 +139,7 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 | `shed owner rm <name>…` | Drop one or more tracked owners (resolves against owners only) |
 | `shed sync [<name>…]` | Fetch each upstream's mirror once and refresh the read-only repos (usually automatic) |
 | `shed status` | Report sync health; show a repo's error and the likely fix |
-| `shed workspace new <repo> <branch>` | Create a writable clone off the freshly-synced repo (purely local); prints its path |
+| `shed workspace new <repo> <branch>` | Create a writable clone off the just-synced repo (purely local); prints its path |
 | `shed workspace ls` | List workspaces with dirty/unpushed state and age |
 | `shed workspace rm <name>…` | Delete one or more workspaces (refuses dirty/unpushed work without `--force`) |
 | `shed path <name>` | Print the absolute path of a repo or workspace by name (for `cd "$(shed path <name>)"`) |
