@@ -35,10 +35,10 @@ both just work.
 
 --track pins the checkout to a branch or tag instead of the default branch:
 a branch advances on every sync, a tag never changes. Several versions of one
-repo can be tracked side by side ("shed add apache/airflow --track
-v2-7-stable" lives next to plain apache/airflow); they share one mirror on
+repo can be tracked side by side ("shed add python/cpython --track
+3.12" lives next to plain python/cpython); they share one mirror on
 disk, so extra versions cost a checkout, not another copy of history. The
-name gains an "@<track>" suffix (airflow@v2-7-stable). Bare track names
+name gains an "@<track>" suffix (cpython@3.12). Bare track names
 prefer a branch over a same-named tag; pin with "heads/<n>" or "tags/<n>".
 
 If <repo> points at a bare user or org (a single path segment, e.g.

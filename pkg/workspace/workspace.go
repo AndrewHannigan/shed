@@ -76,7 +76,7 @@ type Source struct {
 //
 // If name exists as an upstream branch, it is checked out. Otherwise a new
 // branch called name is created off base — defaulting to the catalog's own
-// track, so a workspace made from airflow@v2-7-stable bases on v2-7-stable.
+// track, so a workspace made from cpython@3.12 bases on 3.12.
 //
 // A plain clone sees the mirror's local branches (one per branch-tracked
 // catalog) and its tags, so those bases are a single `clone --branch`. Any

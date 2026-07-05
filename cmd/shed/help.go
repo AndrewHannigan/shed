@@ -124,8 +124,8 @@ Repo
   ~/.shed/repos/<host>/<owner>/<repo>[@<track>]/. A repo follows its
   configured 'track': the upstream default branch when unset, or a pinned
   branch (advances on every sync) or tag (never changes). Several versions
-  of one upstream can sit side by side (airflow, airflow@v2-7-stable,
-  airflow@2.7.3), each independently referenceable.
+  of one upstream can sit side by side (cpython, cpython@3.12,
+  cpython@v3.12.3), each independently referenceable.
 
 Mirror (plumbing)
   Behind the repos, shed keeps one fetch-only mirror per upstream under
@@ -204,7 +204,7 @@ Reversing integration ('shed init --uninstall')
 
     --track <ref> pins the checkout to a branch or tag instead of the
     upstream default branch: a branch advances on every sync, a tag never
-    changes. The name gains an '@<track>' suffix (airflow@v2-7-stable), and
+    changes. The name gains an '@<track>' suffix (cpython@3.12), and
     several versions of one repo can be tracked side by side — they share
     one mirror on disk, so an extra version costs a checkout, not another
     copy of history. Bare names prefer a branch over a same-named tag; pin
@@ -399,7 +399,7 @@ upstream. Edits happen here.
     exists as an upstream branch, check it out (any upstream branch works,
     fetched straight from the local mirror). Otherwise create it off
     <base>, defaulting to the repo's tracked branch or tag — a workspace
-    from airflow@v2-7-stable bases on v2-7-stable. In a terminal the steps
+    from cpython@3.12 bases on 3.12. In a terminal the steps
     are narrated on stderr ("syncing <repo>...DONE", "Creating
     workspace: <path>"); when piped or captured, the bare absolute path is
     printed on stdout so command substitution works. Make changes there,
