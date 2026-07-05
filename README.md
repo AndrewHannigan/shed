@@ -10,7 +10,7 @@
      hook; keep it above the fold. -->
 <!-- ![shed in action](docs/demo.gif) -->
 
-An agent branches off a month-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. **shed** fixes the layer underneath — a read-only, always-fresh library of your repos that every agent can read, and cheap isolated workspaces the moment one needs to write:
+An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. **shed** fixes the layer underneath — a read-only, always-fresh library of your repos that every agent can read, and cheap isolated workspaces the moment one needs to write:
 
 ```text
 You:   "Fix the broken link in octocat/Hello-World's README"
