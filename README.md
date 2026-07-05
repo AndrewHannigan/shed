@@ -10,7 +10,7 @@
      hook; keep it above the fold. -->
 <!-- ![shed in action](docs/demo.gif) -->
 
-An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. All three are one problem: clones built for a single human working one task at a time, now hit by many concurrent agents. **shed** replaces them with a read-only, always-current library for reads and cheap disposable workspaces for writes:
+An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. All three are one problem: clones built for a single human working serially, now hit by many concurrent agents. **shed** replaces them with a read-only, always-current library for reads and cheap disposable workspaces for writes:
 
 ```text
 You:   "Fix the broken link in octocat/Hello-World's README"
