@@ -26,9 +26,11 @@ func newPruneCmd() *cobra.Command {
 		Use:   "prune",
 		Short: "Delete workspaces whose work has already landed",
 		Long: `prune removes every workspace whose work has already landed, reclaiming
-the ones that are safe to delete. A workspace is reclaimed when its branch
-has a merged pull request, or its own commits are already contained in the
-remote default branch (a merge- or rebase-merge with no PR). The merged-PR
+the ones that are safe to delete. A workspace is reclaimed when the branch
+checked out in it (which may have been created or renamed since the workspace
+was made, so this need not be the workspace's name) has a merged pull
+request, or its own commits are already contained in the remote default
+branch (a merge- or rebase-merge with no PR). The merged-PR
 check asks GitHub via the gh CLI, so gh must be installed and authenticated.
 
 A workspace that never committed anything of its own is kept, even though its
@@ -113,9 +115,18 @@ func runPrune(dryRun, force, yes bool, ifOlderThan time.Duration) error {
 			failed++
 			continue
 		}
-		pr, err := forge.MergedPR(host, repo, i.Branch)
+		// Ask GitHub about the branch checked out in the workspace, not the
+		// directory name: the two start out identical, but work is often
+		// pushed from a branch created or renamed inside the workspace, and a
+		// PR merged from that branch must still reclaim it. Detached HEAD
+		// falls back to the directory name.
+		branch := i.Branch
+		if cur, err := workspace.CurrentBranch(i.Path); err == nil {
+			branch = cur
+		}
+		pr, err := forge.MergedPR(host, repo, branch)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: %s %s: could not check PR status: %v\n", repo, i.Branch, err)
+			fmt.Fprintf(os.Stderr, "warning: %s %s: could not check PR status: %v\n", repo, branch, err)
 			failed++
 			continue
 		}
@@ -125,7 +136,7 @@ func runPrune(dryRun, force, yes bool, ifOlderThan time.Duration) error {
 		var landed, hasOwnCommits bool
 		var defaultBranch string
 		if pr == 0 {
-			landed, hasOwnCommits, defaultBranch, err = workspace.LandedInDefault(i.Path, i.Branch)
+			landed, hasOwnCommits, defaultBranch, err = workspace.LandedInDefault(i.Path, branch)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s %s: could not check default-branch status: %v\n", repo, i.Branch, err)
 			}
