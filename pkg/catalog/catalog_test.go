@@ -465,6 +465,47 @@ func TestEnsureRelocksInterruptedTree(t *testing.T) {
 	}
 }
 
+// A repo can legitimately commit a symlink whose target never exists in a
+// checkout (pytorch/xla's external → bazel-xla/external, a bazel output dir).
+// os.Chmod follows links, so a lock walk that chmods them dies with ENOENT —
+// the catalog could never sync. Lock and unlock must skip symlinks.
+func TestEnsureToleratesDanglingSymlink(t *testing.T) {
+	up := setup(t)
+	git(t, up, "checkout", "-q", "main")
+	if err := os.Symlink("bazel-out/external", filepath.Join(up, "external")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, up, "add", "external")
+	git(t, up, "commit", "-q", "-m", "dangling symlink")
+	if err := mirror.Fetch(key, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	const name = key
+	if _, err := Ensure(key, name, Ref{Short: "main"}, nil); err != nil {
+		t.Fatalf("Ensure with a committed dangling symlink: %v", err)
+	}
+	dir := paths.CatalogPath(name)
+	if fi, err := os.Lstat(filepath.Join(dir, "external")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("checkout should contain the symlink, got mode=%v err=%v", fi.Mode(), err)
+	}
+	if treeWritable(name) {
+		t.Error("catalog should be locked despite the dangling symlink")
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "a.txt")); err != nil || fi.Mode().Perm()&0222 != 0 {
+		t.Errorf("regular files should still be locked, mode=%v err=%v", fi.Mode(), err)
+	}
+
+	// The update path (unlock → ff-merge → relock) must survive the link too.
+	commitUpstream(t, up, "main", "b.txt")
+	if _, err := Ensure(key, name, Ref{Short: "main"}, nil); err != nil {
+		t.Fatalf("Ensure updating past a dangling symlink: %v", err)
+	}
+	if treeWritable(name) {
+		t.Error("updated catalog should be locked again")
+	}
+}
+
 // Tracked files modified or deleted in place (HEAD untouched) are healed by
 // the next Ensure — the skip-if-current fast path must not preserve a
 // corrupted checkout that workspaces would then inherit.
