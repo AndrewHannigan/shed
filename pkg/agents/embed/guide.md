@@ -4,7 +4,7 @@ You have a local library of git repos managed by `shed`.
 
 - **Read repos** at `~/.shed/repos/<host>/<owner>/<repo>/` (read-only). A repo may be
   pinned to a branch or tag; those live side by side as `<repo>@<track>` (e.g.
-  `airflow@v2-7-stable`). Repos are READ-ONLY **including their git state**: never
+  `cpython@3.12`). Repos are READ-ONLY **including their git state**: never
   run `git checkout`, `git fetch`, commits, or any other mutating git command inside
   one — shed owns them and repairs interference on the next sync. To work at another
   ref, make a workspace.

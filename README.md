@@ -16,7 +16,7 @@
 - ⚡ **Workspaces in seconds, even offline** — `shed workspace new` is a purely local clone (objects hardlink from a shared per-upstream mirror), with the network never on the critical path. The result is a completely ordinary git repo — branch, commit, and push to GitHub like any clone.
 - 🌱 **Never a stale branch** — repos refresh in the background at session start and again right before every workspace is created, so an agent never unintentionally branches off out-of-date code.
 - 🛡 **A baseline that can't be broken** — repo checkouts are read-only and self-repairing; agents grep and read across the whole catalog, and nothing they do (and nothing shed does in the background) can corrupt the reference copies or lose workspace work.
-- 🗂 **Multiple versions, one repo** — track a branch or tag with `shed add <repo> --track <ref>`; `airflow`, `airflow@v2-7-stable`, and `airflow@2.7.3` sit side by side, sharing one mirror so extra versions cost a checkout, not another copy of history.
+- 🗂 **Multiple versions, one repo** — track a branch or tag with `shed add <repo> --track <ref>`; `cpython`, `cpython@3.12`, and `cpython@v3.12.3` sit side by side, sharing one mirror so extra versions cost a checkout, not another copy of history.
 - 🧹 **Cleanup and upkeep in one command** — `shed prune` reclaims workspaces whose work already landed (merged PR or merged into the default branch), never touches unpushed work, and does all git maintenance behind the scenes — you never run `gc`.
 - 🔁 **Pick up where you left off** — `shed resume <workspace>` reopens the exact agent session that created a workspace — same agent, same session id, same directory — so a half-finished task is one command away.
 - ⚙️ **Zero agent setup** — one `shed init` wires up each agent to use shed automatically.
@@ -45,7 +45,7 @@ shed init
 shed add octocat/Hello-World
 
 # optionally pin extra versions — a branch that follows, or a tag frozen in time
-shed add apache/airflow --track v2-7-stable
+shed add python/cpython --track 3.12
 
 # now run claude, cursor-agent, or opencode — your agent knows how to use it
 ```
@@ -157,15 +157,15 @@ url = "git@github.com:foo/bar.git"
 name = "myorg/bar"   # optional override; default derived from URL (and track)
 
 # Pin a branch or tag. A branch advances on every sync; a tag never changes.
-# Names gain an @<track> suffix: these live at airflow@v2-7-stable and
-# airflow@2.7.3 next to a default-branch airflow, all sharing one mirror.
+# Names gain an @<track> suffix: these live at cpython@3.12 and
+# cpython@v3.12.3 next to a default-branch cpython, all sharing one mirror.
 [[repo]]
-url = "https://github.com/apache/airflow"
-track = "v2-7-stable"
+url = "https://github.com/python/cpython"
+track = "3.12"
 
 [[repo]]
-url = "https://github.com/apache/airflow"
-track = "2.7.3"
+url = "https://github.com/python/cpython"
+track = "v3.12.3"
 
 # Per-repo git config. Reconciled into the cache on every sync and seeded into
 # new workspaces at clone time — forwarded verbatim, so any git option works.
@@ -207,7 +207,7 @@ Behind the two things you see (repos and workspaces) sits one piece of plumbing 
 Why this shape:
 
 - **Fetches can't be blocked.** The mirror fetches upstream truth into `refs/remotes/origin/*`, a namespace no checkout can occupy — so nothing an agent does inside a repo checkout can ever fail the shared fetch. Damage is contained to that one checkout, which repairs itself on the next sync.
-- **Repos sit on real branches.** `git status` in a repo says `On branch v2-7-stable`, not a detached hash; a tag checkout reads `HEAD detached at 2.7.3`. Sync is a fast-forward merge; a force-pushed upstream is detected and reported, then reset.
+- **Repos sit on real branches.** `git status` in a repo says `On branch 3.12`, not a detached hash; a tag checkout reads `HEAD detached at v3.12.3`. Sync is a fast-forward merge; a force-pushed upstream is detected and reported, then reset.
 - **Workspaces stay 100 % ordinary.** A workspace is `git clone <repo> && git remote set-url origin <upstream>` — objects hardlink from the mirror, so creation is local-disk fast and works offline, and the result behaves exactly like a clone of GitHub. Git's own auto-gc keeps long-lived workspaces healthy; shed never touches them in the background.
 - **Nothing shed does in the background can lose agent work.** Sync writes only to shed-owned tiers; a mirror `gc` can never prune what a repo or hardlinked workspace needs (every checkout is a reachability root); cleanup of finished workspaces happens only in explicit `shed prune`, which refuses dirty or unpushed work without `--force`.
 - **Maintenance is shed's job.** You never run `git gc`: `shed prune` compacts each mirror, sweeps stale bookkeeping, and deletes mirrors no config entry references — at a moment you can see, never behind your back.
