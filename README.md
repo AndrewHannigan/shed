@@ -4,8 +4,6 @@
 
 **git repo management for terminal coding agents.**
 
-**shed** gives your agents a unified system for managing git repos and workspaces — read-only reference repos, isolated writable workspaces, and improved session resumption.
-
 <!-- TODO(visual hook): drop a demo GIF/asciinema here — two agents working the same
      repo through shed: each gets its own fresh `shed workspace new`, neither touches the
      read-only store, then `shed prune` cleans up. This is the "10-second, read-no-text"
@@ -14,8 +12,8 @@
 
 - 🤝 **One system, every agent** — Claude Code, Cursor, and opencode all manage repos and workspaces the same way, so parallel sessions never step on each other in the same repo.
 - ⚡ **Workspaces in seconds, even offline** — `shed workspace new` is a purely local clone (objects hardlink from a shared per-upstream mirror), with the network never on the critical path. The result is a completely ordinary git repo — branch, commit, and push to GitHub like any clone.
-- 🌱 **Never a stale branch** — repos refresh in the background at session start and again right before every workspace is created, so an agent never unintentionally branches off out-of-date code.
-- 🛡 **A baseline that can't be broken** — repo checkouts are read-only and self-repairing; agents grep and read across the whole catalog, and nothing they do (and nothing shed does in the background) can corrupt the reference copies or lose workspace work.
+- 🌱 **Never a stale branch** — repos refresh in the background via SessionStart hooks and again right before every workspace is created, so an agent never unintentionally branches off out-of-date code.
+- 🛡 **Pristine reference repos**  — repo checkouts are read-only and self-repairing; agents grep and read across the whole catalog, and nothing they do (and nothing shed does in the background) can corrupt the reference copies.
 - 🗂 **Multiple versions, one repo** — track a branch or tag with `shed add <repo> --track <ref>`; `airflow`, `airflow@v2-7-stable`, and `airflow@2.7.3` sit side by side, sharing one mirror so extra versions cost a checkout, not another copy of history.
 - 🧹 **Cleanup and upkeep in one command** — `shed prune` reclaims workspaces whose work already landed (merged PR or merged into the default branch), never touches unpushed work, and does all git maintenance behind the scenes — you never run `gc`.
 - 🔁 **Pick up where you left off** — `shed resume <workspace>` reopens the exact agent session that created a workspace — same agent, same session id, same directory — so a half-finished task is one command away.
