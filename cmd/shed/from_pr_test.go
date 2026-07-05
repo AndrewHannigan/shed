@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
 	"github.com/AndrewHannigan/shed/pkg/forge"
+	"github.com/AndrewHannigan/shed/pkg/gitx"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
@@ -59,8 +61,39 @@ func TestAddSuggestion(t *testing.T) {
 	if got := addSuggestion("ghe.acme.com/team/widgets"); got != "ghe.acme.com/team/widgets" {
 		t.Errorf("addSuggestion(enterprise) = %q, want unchanged", got)
 	}
-	if got := addSuggestion("Hello-World"); got != "Hello-World" {
-		t.Errorf("addSuggestion(bare) = %q, want unchanged", got)
+	// `shed add <one-segment>` means an owner, so a bare repo token must not
+	// be suggested verbatim — it gains an <owner>/ placeholder.
+	if got := addSuggestion("Hello-World"); got != "<owner>/Hello-World" {
+		t.Errorf("addSuggestion(bare) = %q, want <owner>/Hello-World", got)
+	}
+}
+
+// ghSlugForRepo must derive host/slug from the URL, not the config name — a
+// custom `name` override would parse into the wrong host (or not at all).
+func TestGhSlugForRepo(t *testing.T) {
+	repo := &config.Repo{URL: "https://github.com/acme/widget", Name: "corp/tools/widget"}
+	host, slug, ok := ghSlugForRepo(repo, "corp/tools/widget")
+	if !ok || host != "github.com" || slug != "acme/widget" {
+		t.Fatalf("ghSlugForRepo = (%q, %q, %v), want (github.com, acme/widget, true)", host, slug, ok)
+	}
+}
+
+// A PR URL must resolve a repo tracked only under pinned versions: the URL
+// names the upstream, which every @track entry shares.
+func TestResolvePRRepoTrackPinned(t *testing.T) {
+	c := &config.Config{Repos: []config.Repo{
+		{URL: "https://github.com/apache/airflow", Track: "v2-7-stable"},
+	}}
+	repo, err := resolvePRRepo(c, "github.com/apache/airflow")
+	if err != nil || repo == nil || repo.Track != "v2-7-stable" {
+		t.Fatalf("resolvePRRepo = (%+v, %v), want the pinned entry", repo, err)
+	}
+
+	// With a default-track entry alongside, prefer it.
+	c.Repos = append(c.Repos, config.Repo{URL: "https://github.com/apache/airflow"})
+	repo, err = resolvePRRepo(c, "github.com/apache/airflow")
+	if err != nil || repo == nil || repo.Track != "" {
+		t.Fatalf("resolvePRRepo = (%+v, %v), want the default-track entry", repo, err)
 	}
 }
 
@@ -122,33 +155,63 @@ func TestPlanPRCheckout(t *testing.T) {
 	samePR := forge.PR{Number: 7, HeadRefName: "fix-flux", State: "OPEN"}
 	forkPR := forge.PR{Number: 9, HeadRefName: "fix-1", State: "OPEN",
 		CrossRepo: true, HeadOwner: "contrib", HeadName: "widget"}
+	fresh := prRefState{synced: true, headInMirror: true}
 	const url = "https://github.com/acme/widget"
 
-	t.Run("same-repo head in mirror is a plain checkout", func(t *testing.T) {
-		co := planPRCheckout(samePR, nil, true, "fix-flux", url, "github.com")
+	t.Run("same-repo head in fresh mirror is a plain checkout", func(t *testing.T) {
+		co := planPRCheckout(samePR, nil, fresh, "fix-flux", url, "github.com")
 		if co != (prCheckout{}) {
 			t.Fatalf("= %+v, want the zero plan", co)
 		}
 	})
 
 	t.Run("same-repo head missing from mirror falls back to the pull ref", func(t *testing.T) {
-		co := planPRCheckout(samePR, nil, false, "fix-flux", url, "github.com")
+		co := planPRCheckout(samePR, nil, prRefState{synced: true}, "fix-flux", url, "github.com")
 		if !co.pullFetch || co.forkURL != "" {
 			t.Fatalf("= %+v, want pullFetch without a fork", co)
 		}
 	})
 
-	t.Run("--name override goes through the pull ref", func(t *testing.T) {
-		// workspace.New would prefer an upstream branch named like the
-		// override to any base; the hard reset makes the tip right anyway.
-		co := planPRCheckout(samePR, nil, true, "my-review", url, "github.com")
+	t.Run("degraded sync distrusts the mirror branch tip", func(t *testing.T) {
+		// The branch exists in the mirror but the refresh failed — its tip
+		// may be days behind the PR, so only the pull ref is authoritative.
+		co := planPRCheckout(samePR, nil, prRefState{headInMirror: true}, "fix-flux", url, "github.com")
+		if !co.pullFetch {
+			t.Fatalf("= %+v, want pullFetch when the sync degraded", co)
+		}
+	})
+
+	t.Run("merged PR goes through the frozen pull ref", func(t *testing.T) {
+		// A merged PR's head branch may have moved on; refs/pull/<n>/head is
+		// the PR's actual final state.
+		merged := samePR
+		merged.State = "MERGED"
+		co := planPRCheckout(merged, nil, fresh, "fix-flux", url, "github.com")
+		if !co.pullFetch {
+			t.Fatalf("= %+v, want pullFetch for a non-open PR", co)
+		}
+	})
+
+	t.Run("--name override bases on the head branch, still offline", func(t *testing.T) {
+		co := planPRCheckout(samePR, nil, fresh, "my-review", url, "github.com")
+		if co.pullFetch || co.base != "fix-flux" {
+			t.Fatalf("= %+v, want base=fix-flux without pullFetch", co)
+		}
+	})
+
+	t.Run("--name override colliding with an upstream branch uses the pull ref", func(t *testing.T) {
+		// workspace.New prefers an upstream branch named like the override to
+		// any base; the hard reset makes the tip right regardless.
+		taken := fresh
+		taken.branchTaken = true
+		co := planPRCheckout(samePR, nil, taken, "main", url, "github.com")
 		if !co.pullFetch {
 			t.Fatalf("= %+v, want pullFetch", co)
 		}
 	})
 
 	t.Run("fork PR gets a fork remote with tracking", func(t *testing.T) {
-		co := planPRCheckout(forkPR, nil, false, "fix-1", url, "github.com")
+		co := planPRCheckout(forkPR, nil, prRefState{synced: true}, "fix-1", url, "github.com")
 		want := prCheckout{pullFetch: true, forkURL: "https://github.com/contrib/widget", trackRef: "fix-1"}
 		if co != want {
 			t.Fatalf("= %+v, want %+v", co, want)
@@ -156,7 +219,7 @@ func TestPlanPRCheckout(t *testing.T) {
 	})
 
 	t.Run("fork PR with renamed branch skips tracking", func(t *testing.T) {
-		co := planPRCheckout(forkPR, nil, false, "my-review", url, "github.com")
+		co := planPRCheckout(forkPR, nil, prRefState{synced: true}, "my-review", url, "github.com")
 		if co.trackRef != "" || co.forkURL == "" {
 			t.Fatalf("= %+v, want fork remote without tracking", co)
 		}
@@ -165,14 +228,14 @@ func TestPlanPRCheckout(t *testing.T) {
 	t.Run("deleted fork has no fork remote", func(t *testing.T) {
 		gone := forkPR
 		gone.HeadOwner, gone.HeadName = "", ""
-		co := planPRCheckout(gone, nil, false, "fix-1", url, "github.com")
+		co := planPRCheckout(gone, nil, prRefState{synced: true}, "fix-1", url, "github.com")
 		if !co.pullFetch || co.forkURL != "" {
 			t.Fatalf("= %+v, want pullFetch without a fork", co)
 		}
 	})
 
 	t.Run("no gh is the pull ref alone", func(t *testing.T) {
-		co := planPRCheckout(forge.PR{}, forge.ErrGhMissing, false, "pr-7", url, "github.com")
+		co := planPRCheckout(forge.PR{}, forge.ErrGhMissing, prRefState{synced: true}, "pr-7", url, "github.com")
 		if !co.pullFetch || co.forkURL != "" || co.base != "" {
 			t.Fatalf("= %+v, want bare pullFetch", co)
 		}
@@ -264,11 +327,11 @@ func writeUpstreamFile(t *testing.T, dir, name, content string) {
 
 func revParseT(t *testing.T, dir, rev string) string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", dir, "rev-parse", rev).Output()
-	if err != nil {
-		t.Fatalf("rev-parse %s in %s: %v", rev, dir, err)
+	sha, ok := gitx.RevParse(dir, rev)
+	if !ok {
+		t.Fatalf("rev-parse %s in %s failed", rev, dir)
 	}
-	return strings.TrimSpace(string(out))
+	return sha
 }
 
 // stubPRView swaps the gh seam for this test.
@@ -396,7 +459,7 @@ func TestRunWorkspaceFromPRNameOverride(t *testing.T) {
 func TestRunWorkspaceFromPRLookupFailure(t *testing.T) {
 	setupFromPREnv(t)
 	stubPRView(t, func(host, repo string, number int) (forge.PR, error) {
-		return forge.PR{}, errors.New("GraphQL: Could not resolve to a PullRequest with the number of 999")
+		return forge.PR{}, errors.New("gh pr view failed: some transient network problem")
 	})
 
 	err := runWorkspaceFromPR("widget#999", "")
@@ -405,6 +468,31 @@ func TestRunWorkspaceFromPRLookupFailure(t *testing.T) {
 	}
 	if infos, _ := workspace.ListAll(); len(infos) != 0 {
 		t.Fatalf("no workspace should exist after a failed lookup, got %+v", infos)
+	}
+}
+
+// A PR that GitHub says does not exist is a NotFound, not a network error —
+// scripts keying on exit codes must not retry a typo'd number. The failed run
+// must also consume the pending session intent its pre-exec hook recorded, so
+// no stale intent survives to mis-link a future workspace.
+func TestRunWorkspaceFromPRNotFound(t *testing.T) {
+	setupFromPREnv(t)
+	stubPRView(t, func(host, repo string, number int) (forge.PR, error) {
+		return forge.PR{}, fmt.Errorf("%w: #999 in acme/widget", forge.ErrPRNotFound)
+	})
+	if err := workspace.WritePending(prPendingKey("widget", 999), workspace.SessionLink{
+		Agent: "claude", SessionID: "sess-dead", CWD: "/x",
+	}); err != nil {
+		t.Fatalf("WritePending: %v", err)
+	}
+
+	err := runWorkspaceFromPR("widget#999", "")
+	var coded *errs.Coded
+	if !errors.As(err, &coded) || coded.Code != errs.NotFound {
+		t.Fatalf("err = %v, want errs.NotFound", err)
+	}
+	if p, _ := workspace.TakePending(prPendingKey("widget", 999)); p != nil {
+		t.Fatalf("pending intent should be consumed by the failed run, got %+v", *p)
 	}
 }
 
@@ -437,8 +525,9 @@ func TestRunWorkspaceFromPRLinksSession(t *testing.T) {
 	stubPRView(t, func(host, repo string, number int) (forge.PR, error) {
 		return forge.PR{Number: 7, HeadRefName: "feature-x", State: "OPEN"}, nil
 	})
-	// What the __on-tool-call hook records for `shed workspace from-pr ...#7`.
-	if err := workspace.WritePending("pr-7", workspace.SessionLink{
+	// What the __on-tool-call hook records for `shed workspace from-pr widget#7`
+	// — the repo-scoped rendezvous key both sides derive from the command.
+	if err := workspace.WritePending(prPendingKey("widget", 7), workspace.SessionLink{
 		Agent: "claude", SessionID: "sess-42", CWD: "/launch/dir",
 	}); err != nil {
 		t.Fatalf("WritePending: %v", err)

@@ -10,41 +10,50 @@ import (
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
-func TestParsePendingWorkspaceKey(t *testing.T) {
+func TestParsePendingWorkspaceKeys(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
-		want string
-		ok   bool
+		want []string // nil means "no keys"
 	}{
-		{"basic", "shed workspace new octocat/foo my-branch", "my-branch", true},
-		{"ws alias", "shed ws new foo fix-bug", "fix-bug", true},
-		{"with base flag", "shed workspace new foo feat --base main", "feat", true},
-		{"base flag between args", "shed workspace new foo --base main feat", "feat", true},
-		{"shell wrapped", "cd /tmp && FOO=1 shed ws new foo task-1", "task-1", true},
-		{"abs path binary", "/usr/local/bin/shed workspace new foo task-2", "task-2", true},
-		{"nested branch name", "shed workspace new foo feature/x", "feature/x", true},
-		{"not a workspace new", "shed ls", "", false},
-		{"workspace but not new", "shed workspace ls", "", false},
-		{"only one positional", "shed workspace new foo", "", false},
-		{"unrelated mentioning phrase", `echo "workspace new stuff"`, "", false},
-		{"option-looking name rejected", "shed workspace new foo -evil", "", false},
+		{"basic", "shed workspace new octocat/foo my-branch", []string{"my-branch"}},
+		{"ws alias", "shed ws new foo fix-bug", []string{"fix-bug"}},
+		{"with base flag", "shed workspace new foo feat --base main", []string{"feat"}},
+		{"base flag between args", "shed workspace new foo --base main feat", []string{"feat"}},
+		{"shell wrapped", "cd /tmp && FOO=1 shed ws new foo task-1", []string{"task-1"}},
+		{"abs path binary", "/usr/local/bin/shed workspace new foo task-2", []string{"task-2"}},
+		{"nested branch name", "shed workspace new foo feature/x", []string{"feature/x"}},
+		{"not a workspace new", "shed ls", nil},
+		{"workspace but not new", "shed workspace ls", nil},
+		{"only one positional", "shed workspace new foo", nil},
+		{"unrelated mentioning phrase", `echo "workspace new stuff"`, nil},
+		{"option-looking name rejected", "shed workspace new foo -evil", nil},
 
-		// from-pr: keyed by --name when given, else pr-<number> from the ref.
-		{"from-pr URL", "shed workspace from-pr https://github.com/o/r/pull/42", "pr-42", true},
-		{"from-pr quoted URL", `shed workspace from-pr "https://github.com/o/r/pull/42#top"`, "pr-42", true},
-		{"from-pr hash ref", "shed ws from-pr r#7", "pr-7", true},
-		{"from-pr with --name", "shed workspace from-pr r#7 --name my-review", "my-review", true},
-		{"from-pr with --name= form", "shed ws from-pr r#7 --name=my-review", "my-review", true},
-		{"from-pr shell wrapped", "cd /x && shed ws from-pr o/r#9", "pr-9", true},
-		{"from-pr without a ref", "shed workspace from-pr", "", false},
-		{"from-pr unparseable ref", "shed workspace from-pr not-a-pr", "", false},
+		// from-pr: keyed by --name when given, else the repo-scoped
+		// prPendingKey — PR numbers are only unique per repo.
+		{"from-pr URL", "shed workspace from-pr https://github.com/o/r/pull/42", []string{"pr-42-github.com-o-r"}},
+		{"from-pr quoted URL", `shed workspace from-pr "https://github.com/o/r/pull/42#top"`, []string{"pr-42-github.com-o-r"}},
+		{"from-pr hash ref", "shed ws from-pr r#7", []string{"pr-7-r"}},
+		{"from-pr with --name", "shed workspace from-pr r#7 --name my-review", []string{"my-review"}},
+		{"from-pr with --name= form", "shed ws from-pr r#7 --name=my-review", []string{"my-review"}},
+		{"from-pr shell wrapped", "cd /x && shed ws from-pr o/r#9", []string{"pr-9-o-r"}},
+		{"from-pr without a ref", "shed workspace from-pr", nil},
+		{"from-pr unparseable ref", "shed workspace from-pr not-a-pr", nil},
+
+		// A compound command creating several workspaces records every key —
+		// an earlier from-pr must not shadow a later new (or vice versa).
+		{"from-pr then new", "shed ws from-pr acme/widget#7 && shed ws new widget hotfix",
+			[]string{"pr-7-acme-widget", "hotfix"}},
+		{"new then from-pr", "shed ws new widget hotfix && shed ws from-pr acme/widget#7",
+			[]string{"hotfix", "pr-7-acme-widget"}},
+		{"broken first invocation does not hide the second",
+			"shed ws from-pr not-a-pr && shed ws new widget hotfix", []string{"hotfix"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := parsePendingWorkspaceKey(tt.in)
-			if got != tt.want || ok != tt.ok {
-				t.Errorf("parsePendingWorkspaceKey(%q) = (%q, %v), want (%q, %v)", tt.in, got, ok, tt.want, tt.ok)
+			got := parsePendingWorkspaceKeys(tt.in)
+			if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
+				t.Errorf("parsePendingWorkspaceKeys(%q) = %v, want %v", tt.in, got, tt.want)
 			}
 		})
 	}

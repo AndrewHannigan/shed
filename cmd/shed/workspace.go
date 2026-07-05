@@ -99,12 +99,31 @@ func runWorkspaceNew(name, branch, base string) error {
 	if err := guardNewWorkspace(c, name, branch); err != nil {
 		return err
 	}
-	if err := syncForWorkspace(name, repo); err != nil {
+	if _, err := syncForWorkspace(name, repo); err != nil {
 		return err
 	}
+	path, err := createWorkspace(repo, name, branch, base)
+	if err != nil {
+		return err
+	}
+	// Best-effort: link this workspace to the agent session that created it, so
+	// `shed resume <name>` can reopen it. The session comes from the
+	// SHED_SESSION_* env override (headless) or the pending intent the pre-exec
+	// hook recorded. A failure here never fails the create — resume is just
+	// unavailable for an unlinked workspace.
+	finalizeSessionLink(name, branch)
+	emitWorkspacePath(path)
+	return nil
+}
+
+// createWorkspace is the creation step shared by `workspace new` and
+// `workspace from-pr`: resolve the workspace source, narrate on stderr, run
+// workspace.New, and map its failures onto shed's exit codes. Returns the
+// absolute workspace path.
+func createWorkspace(repo *config.Repo, name, branch, base string) (string, error) {
 	src, err := workspaceSource(repo, name)
 	if err != nil {
-		return errs.Wrap(errs.Config, err)
+		return "", errs.Wrap(errs.Config, err)
 	}
 	fmt.Fprintf(os.Stderr, "Creating workspace: %s\n", workspace.PathFor(name, branch))
 	path, warnings, err := workspace.New(src, branch, base)
@@ -113,24 +132,21 @@ func runWorkspaceNew(name, branch, base string) error {
 	}
 	if err != nil {
 		if errors.Is(err, mirror.ErrLocked) {
-			return errs.Wrap(errs.Locked, err)
+			return "", errs.Wrap(errs.Locked, err)
 		}
-		return errs.Wrap(errs.Network, err)
+		return "", errs.Wrap(errs.Network, err)
 	}
-	// Best-effort: link this workspace to the agent session that created it, so
-	// `shed resume <name>` can reopen it. The session comes from the
-	// SHED_SESSION_* env override (headless) or the pending intent the pre-exec
-	// hook recorded. A failure here never fails the create — resume is just
-	// unavailable for an unlinked workspace.
-	finalizeSessionLink(name, branch)
-	// The bare path on stdout is the machine-readable contract — it is what
-	// makes `cd "$(shed ws new …)"` and agent capture work. Interactive
-	// terminals already saw the "Creating workspace:" line, so the bare
-	// path is emitted only when stdout is being piped or captured.
+	return path, nil
+}
+
+// emitWorkspacePath prints the bare workspace path on stdout when it is being
+// piped or captured — the machine-readable contract that makes
+// `cd "$(shed ws new …)"` and agent capture work. Interactive terminals
+// already saw the "Creating workspace:" line, so nothing is printed there.
+func emitWorkspacePath(path string) {
 	if !isTerminal(os.Stdout) {
 		fmt.Println(path)
 	}
-	return nil
 }
 
 // guardNewWorkspace runs the pre-creation checks shared by `workspace new`
@@ -176,8 +192,10 @@ func guardNewWorkspace(c *config.Config, name, branch string) error {
 // the workspace forks from the freshest code. If that fails but a synced repo
 // already exists, warn and fall back to the last synced state — graceful
 // degradation, so creation still works offline; only hard-fail when there is
-// nothing on disk to fork from.
-func syncForWorkspace(name string, repo *config.Repo) error {
+// nothing on disk to fork from. refreshed reports whether the mirror really
+// was brought up to date — false means the fallback path, which from-pr uses
+// to avoid trusting a possibly-stale branch tip.
+func syncForWorkspace(name string, repo *config.Repo) (refreshed bool, err error) {
 	// A single repo refresh, so streaming git's progress meter can't
 	// interleave; show it when interactive (nil when output is piped — see
 	// isTerminal). Both modes end with one "syncing <repo>...DONE" (or
@@ -205,13 +223,14 @@ func syncForWorkspace(name string, repo *config.Repo) error {
 	if syncFailed {
 		if !catalog.Valid(name) {
 			if res.locked {
-				return errs.New(errs.Locked, "could not sync %s: %s", name, res.Error)
+				return false, errs.New(errs.Locked, "could not sync %s: %s", name, res.Error)
 			}
-			return errs.New(errs.Network, "could not sync %s: %s", name, res.Error)
+			return false, errs.New(errs.Network, "could not sync %s: %s", name, res.Error)
 		}
 		fmt.Fprintf(os.Stderr, "warning: could not refresh %s (%s); using the last synced state\n", name, res.Error)
+		return false, nil
 	}
-	return nil
+	return true, nil
 }
 
 // workspaceSource assembles the workspace.Source for a config repo: its
@@ -249,26 +268,32 @@ func repoNames(c *config.Config) []string {
 }
 
 // finalizeSessionLink writes the session-link sidecar for a just-created
-// workspace, sourcing the session from (in order) the SHED_SESSION_* env
-// override or the pending intent recorded by the pre-exec hook — checked
-// under the workspace name first, then any fallbackKeys. The fallbacks exist
-// for `workspace from-pr`: its pre-exec hook can't know the eventual
-// workspace name (the PR's head branch, resolved later), so it records the
-// intent under "pr-<number>" instead. Consumed pending intents are cleared in
-// passing. Best-effort: any problem (no session info, write error) leaves the
-// workspace unlinked.
-func finalizeSessionLink(repo, wsName string, fallbackKeys ...string) {
+// workspace, sourcing the session from the SHED_SESSION_* env override or the
+// pending intent recorded by the pre-exec hook. The intent is looked up under
+// pendingKeys — exactly the keys the hook may have recorded for this
+// invocation — defaulting to the workspace name (the `workspace new` case;
+// from-pr passes its own rendezvous key, see prPendingKey). Checking only
+// this invocation's keys means a stale intent left by some other failed
+// command can never be cross-wired onto this workspace. Consumed pending
+// intents are cleared in passing. Best-effort: any problem (no session info,
+// write error) leaves the workspace unlinked.
+func finalizeSessionLink(repo, wsName string, pendingKeys ...string) {
 	link, ok := sessionFromEnv()
 	if !ok {
-		for _, key := range append([]string{wsName}, fallbackKeys...) {
+		if len(pendingKeys) == 0 {
+			pendingKeys = []string{wsName}
+		}
+		var found *workspace.SessionLink
+		for _, key := range pendingKeys {
 			if p, err := workspace.TakePending(key); err == nil && p != nil {
-				link = *p
+				found = p
 				break
 			}
 		}
-		if link.SessionID == "" {
+		if found == nil {
 			return
 		}
+		link = *found
 	}
 	if link.CWD == "" {
 		if cwd, err := os.Getwd(); err == nil {

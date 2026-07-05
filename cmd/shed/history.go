@@ -19,14 +19,14 @@ import (
 // status, workspace ls/path), `sync`, the `history` command itself, the hidden
 // internal commands, and a bare `shed` — is intentionally absent.
 var recordedCommands = map[string]bool{
-	"add":           true,
-	"rm":            true,
-	"repo add":      true,
-	"repo rm":       true,
-	"owner add":     true,
-	"owner rm":      true,
-	"prune":         true,
-	"init":          true,
+	"add":               true,
+	"rm":                true,
+	"repo add":          true,
+	"repo rm":           true,
+	"owner add":         true,
+	"owner rm":          true,
+	"prune":             true,
+	"init":              true,
 	"workspace new":     true,
 	"workspace from-pr": true,
 	"workspace rm":      true,

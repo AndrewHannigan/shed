@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/AndrewHannigan/shed/pkg/gitx"
@@ -17,25 +18,38 @@ import (
 // meaningless unpushed counts.
 //
 // The workspace is freshly created when this runs, so a hard reset can't
-// discard work.
-func CheckoutPRHead(path string, number int) error {
+// discard work. Returns non-fatal warnings (LFS blobs unavailable), matching
+// New's degradation: an unreachable LFS server leaves pointer stubs, never a
+// failed (and deleted) workspace.
+func CheckoutPRHead(path string, number int) (warnings []string, err error) {
 	if number <= 0 {
-		return fmt.Errorf("invalid PR number %d", number)
+		return nil, fmt.Errorf("invalid PR number %d", number)
 	}
 	// The refspec is formatted from an int, so it can never read as a git
 	// option. No local ref is created: FETCH_HEAD is enough for the reset,
 	// and refs/pull/* stays an upstream-owned namespace.
 	if err := gitx.RunEnv(path, lfsSkip, "fetch", "origin", fmt.Sprintf("refs/pull/%d/head", number)); err != nil {
-		return fmt.Errorf("fetch PR head: %w", err)
+		return nil, fmt.Errorf("fetch PR head: %w", err)
 	}
-	if err := gitx.Run(path, "reset", "--hard", "FETCH_HEAD"); err != nil {
-		return fmt.Errorf("reset to PR head: %w", err)
+	// lfsSkip on the reset too: checking out the PR's files must not invoke
+	// the LFS smudge filter, whose network failure would fail the reset (New
+	// treats the same situation as a pointer-stubs warning). Blobs are
+	// resolved best-effort below.
+	if err := gitx.RunEnv(path, lfsSkip, "reset", "--hard", "FETCH_HEAD"); err != nil {
+		return nil, fmt.Errorf("reset to PR head: %w", err)
 	}
 	// The branch may or may not have tracking (created fresh: none; named
 	// after an existing branch: origin/<name>) — unsetting when there is none
 	// exits non-zero, which is fine to ignore.
 	_ = gitx.Run(path, "branch", "--unset-upstream")
-	return nil
+	if usesLFS(path) {
+		if _, lfsErr := exec.LookPath("git-lfs"); lfsErr != nil {
+			warnings = append(warnings, "repo uses git LFS but git-lfs is not installed; files are pointer stubs")
+		} else if err := gitx.Run(path, "lfs", "pull"); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not fetch LFS objects (offline?); files are pointer stubs: %v", err))
+		}
+	}
+	return warnings, nil
 }
 
 // AddForkRemote wires a cross-repo PR workspace for pushing back to the
@@ -58,7 +72,7 @@ func AddForkRemote(path, url, trackRef string) (tracked bool, err error) {
 		return false, nil
 	}
 	// trackRef was validated as a safe branch name by the caller (it comes
-	// from planFromPR, which runs paths.ValidateBranch on it).
+	// from planPRCheckout, which only sets it to an already-validated name).
 	if err := gitx.RunEnv(path, lfsSkip, "fetch", "fork", trackRef); err != nil {
 		return false, nil
 	}

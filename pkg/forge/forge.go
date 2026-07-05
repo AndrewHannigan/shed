@@ -24,6 +24,11 @@ import (
 var (
 	ErrGhMissing  = errors.New("gh CLI not found on PATH (needed to expand owners)")
 	ErrGhUnauthed = errors.New("gh CLI is not authenticated (run `gh auth login`)")
+
+	// ErrPRNotFound means gh reached GitHub and GitHub answered that the pull
+	// request does not exist — a permanent input error, not a connectivity
+	// failure, so callers can classify it as not-found rather than retryable.
+	ErrPRNotFound = errors.New("no pull request with that number")
 )
 
 // defaultLimit caps how many repos we list per owner. gh defaults to 30, which
@@ -85,20 +90,9 @@ func ListOwnerRepos(ownerURL string, f Filter) ([]Repo, error) {
 	if strings.Contains(login, "/") {
 		return nil, fmt.Errorf("%q is a repo URL, not an owner URL", ownerURL)
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		return nil, ErrGhMissing
-	}
-
-	cmd := exec.Command("gh", buildListArgs(login, f)...)
-	// Target enterprise hosts by setting GH_HOST; github.com is gh's default.
-	if host != "" && host != "github.com" {
-		cmd.Env = append(os.Environ(), "GH_HOST="+host)
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, _, err := ghOutput("gh repo list", host, buildListArgs(login, f))
 	if err != nil {
-		return nil, classifyExecErr("gh repo list", err, stderr.String())
+		return nil, err
 	}
 	return decodeRepos(out, isSSHURL(ownerURL))
 }
@@ -161,18 +155,9 @@ func classifyOwnerCheck(runErr error, stderr string) (bool, error) {
 // targets an enterprise host via GH_HOST. Like ListOwnerRepos it returns
 // ErrGhMissing / ErrGhUnauthed (wrapped) when gh can't be used.
 func MergedPR(host, repo, branch string) (int, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return 0, ErrGhMissing
-	}
-	cmd := exec.Command("gh", buildPRListArgs(repo, branch)...)
-	if host != "" && host != "github.com" {
-		cmd.Env = append(os.Environ(), "GH_HOST="+host)
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, _, err := ghOutput("gh pr list", host, buildPRListArgs(repo, branch))
 	if err != nil {
-		return 0, classifyExecErr("gh pr list", err, stderr.String())
+		return 0, err
 	}
 	return decodeMergedPR(out)
 }
@@ -224,22 +209,45 @@ type PR struct {
 // ViewPR fetches the metadata for pull request number in repo (an
 // "owner/name" slug). host selects the GitHub host exactly as in MergedPR.
 // Like the other forge calls it returns ErrGhMissing / ErrGhUnauthed
-// (wrapped) when gh can't be used, so callers can degrade.
+// (wrapped) when gh can't be used, so callers can degrade; a PR that GitHub
+// says does not exist returns ErrPRNotFound (wrapped).
 func ViewPR(host, repo string, number int) (PR, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return PR{}, ErrGhMissing
+	out, stderr, err := ghOutput("gh pr view", host, buildPRViewArgs(repo, number))
+	if err != nil {
+		if isPRNotFound(stderr) {
+			return PR{}, fmt.Errorf("%w: #%d in %s", ErrPRNotFound, number, repo)
+		}
+		return PR{}, err
 	}
-	cmd := exec.Command("gh", buildPRViewArgs(repo, number)...)
+	return decodePR(out)
+}
+
+// isPRNotFound reports whether gh's stderr says the PR number does not
+// resolve — GitHub's GraphQL error for `pr view` on a nonexistent number.
+// Pure for testability.
+func isPRNotFound(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "could not resolve to a pullrequest")
+}
+
+// ghOutput runs `gh <args>` against host (via GH_HOST for non-github.com
+// hosts, matching every other invocation here), returning stdout plus the raw
+// stderr so callers can do command-specific classification on top of the
+// generic classifyExecErr the returned error already went through.
+func ghOutput(what, host string, args []string) (stdout []byte, stderr string, err error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil, "", ErrGhMissing
+	}
+	cmd := exec.Command("gh", args...)
 	if host != "" && host != "github.com" {
 		cmd.Env = append(os.Environ(), "GH_HOST="+host)
 	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return PR{}, classifyExecErr("gh pr view", err, stderr.String())
+	var sb strings.Builder
+	cmd.Stderr = &sb
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		return nil, sb.String(), classifyExecErr(what, runErr, sb.String())
 	}
-	return decodePR(out)
+	return out, sb.String(), nil
 }
 
 // buildPRViewArgs builds the `gh pr view` argument vector that fetches the

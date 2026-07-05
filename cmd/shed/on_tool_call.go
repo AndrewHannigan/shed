@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -81,8 +80,8 @@ func recordPendingFromHook(stdin io.Reader, agentKey string) {
 	if sessionID == "" || command == "" {
 		return
 	}
-	wsName, ok := parsePendingWorkspaceKey(command)
-	if !ok {
+	keys := parsePendingWorkspaceKeys(command)
+	if len(keys) == 0 {
 		return
 	}
 	if agentKey == "" {
@@ -100,11 +99,13 @@ func recordPendingFromHook(stdin io.Reader, agentKey string) {
 			cwd = launch
 		}
 	}
-	_ = workspace.WritePending(wsName, workspace.SessionLink{
-		Agent:     agentKey,
-		SessionID: sessionID,
-		CWD:       cwd,
-	})
+	for _, key := range keys {
+		_ = workspace.WritePending(key, workspace.SessionLink{
+			Agent:     agentKey,
+			SessionID: sessionID,
+			CWD:       cwd,
+		})
+	}
 }
 
 // launchCWDFromTranscript returns the directory a Claude session was launched
@@ -158,37 +159,52 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// parsePendingWorkspaceKey extracts the key a pending session→workspace
-// intent should be recorded under from a workspace-creating shed command:
+// parsePendingWorkspaceKeys extracts the keys pending session→workspace
+// intents should be recorded under, one per workspace-creating invocation in
+// the command:
 //
 //	shed workspace new <repo> <name>          → <name>
 //	shed workspace from-pr <pr> --name <name> → <name>
-//	shed workspace from-pr <pr>               → "pr-<number>" (from the PR ref)
+//	shed workspace from-pr <pr>               → prPendingKey (PR number + repo token)
 //
 // It tokenizes on whitespace — tolerant of shell wrappers like
-// `cd x && FOO=1 shed ws new a b` — and locates a `shed` token followed by
-// `workspace`/`ws` then the verb. The bare from-pr form can't know the
-// workspace's eventual name (the PR's head branch, resolved later via gh), so
-// it records under the "pr-<number>" key that runWorkspaceFromPR also checks
-// when finalizing (see finalizeSessionLink's fallback keys). Returns ok=false
-// when the command isn't a recognizable workspace creation.
-func parsePendingWorkspaceKey(command string) (string, bool) {
+// `cd x && FOO=1 shed ws new a b` — and scans for every `shed` token followed
+// by `workspace`/`ws` then a creating verb, so a compound command that
+// creates several workspaces records an intent for each. The bare from-pr
+// form can't know the workspace's eventual name (the PR's head branch,
+// resolved later via gh), so it records under the repo-scoped rendezvous key
+// that runWorkspaceFromPR also checks when finalizing (see prPendingKey).
+// Returns nil when the command creates no workspace.
+func parsePendingWorkspaceKeys(command string) []string {
 	toks := strings.Fields(command)
-	verb, verbIdx := "", -1
+	var keys []string
 	for i := 0; i+2 < len(toks); i++ {
-		if isShedToken(toks[i]) && (toks[i+1] == "workspace" || toks[i+1] == "ws") &&
-			(toks[i+2] == "new" || toks[i+2] == "from-pr") {
-			verb, verbIdx = toks[i+2], i+2
-			break
+		if !isShedToken(toks[i]) || (toks[i+1] != "workspace" && toks[i+1] != "ws") {
+			continue
 		}
+		verb := toks[i+2]
+		if verb != "new" && verb != "from-pr" {
+			continue
+		}
+		if key, ok := pendingKeyFromArgs(verb, toks[i+3:]); ok {
+			keys = append(keys, key)
+		}
+		i += 2
 	}
-	if verbIdx == -1 {
-		return "", false
-	}
+	return dedupeStrings(keys)
+}
+
+// pendingKeyFromArgs derives one invocation's pending key from the tokens
+// following its verb, scanning until a shell separator or the next shed
+// invocation so a compound command's later arguments don't bleed in.
+func pendingKeyFromArgs(verb string, toks []string) (string, bool) {
 	var positionals []string
 	var nameFlag string
-	for i := verbIdx + 1; i < len(toks); i++ {
+	for i := 0; i < len(toks); i++ {
 		t := toks[i]
+		if isShellSeparator(t) || isShedToken(t) {
+			break
+		}
 		if t == "--" {
 			continue
 		}
@@ -228,11 +244,11 @@ func parsePendingWorkspaceKey(command string) (string, bool) {
 			if len(positionals) < 1 {
 				return "", false
 			}
-			_, number, err := parsePRRef(positionals[0])
+			token, number, err := parsePRRef(positionals[0])
 			if err != nil {
 				return "", false
 			}
-			key = fmt.Sprintf("pr-%d", number)
+			key = prPendingKey(token, number)
 		}
 	}
 	// Reject anything that wouldn't be a valid workspace name, so a malformed
@@ -241,6 +257,16 @@ func parsePendingWorkspaceKey(command string) (string, bool) {
 		return "", false
 	}
 	return key, true
+}
+
+// isShellSeparator reports whether a token separates commands in a shell
+// line, ending the argument scan of the invocation before it.
+func isShellSeparator(t string) bool {
+	switch t {
+	case "&&", "||", ";", "|", "&":
+		return true
+	}
+	return false
 }
 
 // isShedToken reports whether a token is the shed binary invocation: bare

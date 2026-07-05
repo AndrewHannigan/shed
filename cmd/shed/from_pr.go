@@ -13,7 +13,6 @@ import (
 	"github.com/AndrewHannigan/shed/pkg/errs"
 	"github.com/AndrewHannigan/shed/pkg/forge"
 	"github.com/AndrewHannigan/shed/pkg/gitx"
-	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/paths"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
@@ -63,7 +62,7 @@ piped or captured, the bare workspace path is printed on stdout, so
 	return cmd
 }
 
-func runWorkspaceFromPR(prRef, nameFlag string) error {
+func runWorkspaceFromPR(prRef, nameFlag string) (retErr error) {
 	if err := gitx.RequireGit(); err != nil {
 		return errs.Wrap(errs.MissingDep, err)
 	}
@@ -76,20 +75,29 @@ func runWorkspaceFromPR(prRef, nameFlag string) error {
 			return errs.Wrap(errs.Config, err)
 		}
 	}
+	// The key the pre-exec hook recorded this invocation's session intent
+	// under (see parsePendingWorkspaceKey — both sides derive it from the
+	// same command line). Consume it on failure too: a failed run must not
+	// strand a stale intent for some future workspace to mis-link.
+	pendingKey := nameFlag
+	if pendingKey == "" {
+		pendingKey = prPendingKey(repoToken, number)
+	}
+	if paths.ValidateBranch(pendingKey) != nil {
+		pendingKey = "" // never touch pending files under an unsafe key
+	} else {
+		defer func() {
+			if retErr != nil {
+				_, _ = workspace.TakePending(pendingKey)
+			}
+		}()
+	}
 	c, err := config.Load()
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	repo, err := c.Resolve(repoToken)
+	repo, err := resolvePRRepo(c, repoToken)
 	if err != nil {
-		// from-pr is often the very first touch of a repo (an agent handed a
-		// PR URL), so a miss points at the fix rather than just "not found".
-		var coded *errs.Coded
-		if errors.As(err, &coded) && coded.Code == errs.NotFound {
-			return errs.New(errs.NotFound,
-				"repo %q is not in the library; add it first with `shed add %s`, then re-run",
-				repoToken, addSuggestion(repoToken))
-		}
 		return err
 	}
 	name, err := repo.ResolvedName()
@@ -102,12 +110,15 @@ func runWorkspaceFromPR(prRef, nameFlag string) error {
 	// reachable as refs/pull/<n>/head — but any other failure (no such PR,
 	// network down) is a real error: proceeding would build a workspace off
 	// the wrong commit or none at all.
-	host, slug, ok := ghRepoFromName(name)
+	host, slug, ok := ghSlugForRepo(repo, name)
 	if !ok {
 		return errs.New(errs.Config, "cannot derive a GitHub owner/repo from %q", name)
 	}
 	info, ghErr := prView(host, slug, number)
 	if ghErr != nil && !errors.Is(ghErr, forge.ErrGhMissing) && !errors.Is(ghErr, forge.ErrGhUnauthed) {
+		if errors.Is(ghErr, forge.ErrPRNotFound) {
+			return errs.Wrap(errs.NotFound, ghErr)
+		}
 		return errs.Wrap(errs.Network, fmt.Errorf("could not look up PR #%d in %s: %w", number, slug, ghErr))
 	}
 
@@ -121,39 +132,38 @@ func runWorkspaceFromPR(prRef, nameFlag string) error {
 	if err := guardNewWorkspace(c, name, branch); err != nil {
 		return err
 	}
-	if err := syncForWorkspace(name, repo); err != nil {
+	refreshed, err := syncForWorkspace(name, repo)
+	if err != nil {
 		return err
 	}
 
-	// The checkout strategy needs the freshly synced mirror: a same-repo PR
-	// whose head branch made it into the mirror is a plain branch checkout
-	// (offline from here on); everything else goes through refs/pull/<n>/head.
-	mirrorHasHead := false
+	// The checkout strategy needs the mirror's ref state: an open same-repo
+	// PR whose head branch made it into the freshly synced mirror can be
+	// realized offline from here on; everything else goes through
+	// refs/pull/<n>/head. A degraded sync (refreshed=false) forces the pull
+	// ref too — a stale mirror branch that merely exists must not be trusted
+	// to be the PR's current head.
+	refs := prRefState{synced: refreshed}
 	if ghErr == nil && !info.CrossRepo && info.HeadRefName != "" {
 		if key, err := repo.MirrorKey(); err == nil {
-			mirrorHasHead, _ = gitx.RefExists(paths.MirrorPath(key), "refs/remotes/origin/"+info.HeadRefName)
+			mp := paths.MirrorPath(key)
+			refs.headInMirror, _ = gitx.RefExists(mp, "refs/remotes/origin/"+info.HeadRefName)
+			refs.branchTaken, _ = gitx.RefExists(mp, "refs/remotes/origin/"+branch)
 		}
 	}
-	co := planPRCheckout(info, ghErr, mirrorHasHead, branch, repo.URL, host)
+	co := planPRCheckout(info, ghErr, refs, branch, repo.URL, host)
 
-	src, err := workspaceSource(repo, name)
+	path, err := createWorkspace(repo, name, branch, co.base)
 	if err != nil {
-		return errs.Wrap(errs.Config, err)
-	}
-	fmt.Fprintf(os.Stderr, "Creating workspace: %s\n", workspace.PathFor(name, branch))
-	path, warns, err := workspace.New(src, branch, co.base)
-	for _, w := range warns {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
-	}
-	if err != nil {
-		if errors.Is(err, mirror.ErrLocked) {
-			return errs.Wrap(errs.Locked, err)
-		}
-		return errs.Wrap(errs.Network, err)
+		return err
 	}
 	if co.pullFetch {
 		fmt.Fprintf(os.Stderr, "Fetching PR #%d head from origin\n", number)
-		if err := workspace.CheckoutPRHead(path, number); err != nil {
+		warns, err := workspace.CheckoutPRHead(path, number)
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+		}
+		if err != nil {
 			// Without the PR's commits the workspace is a trap — a branch off
 			// the default tip that looks like the PR. Remove it so a retry
 			// starts clean.
@@ -172,13 +182,10 @@ func runWorkspaceFromPR(prRef, nameFlag string) error {
 				co.forkURL, pushRefHint(info))
 		}
 	}
-	// The pre-exec hook records the pending session intent under "pr-<n>"
-	// when the from-pr command carries no --name (it can't know the head
-	// branch); check that key too.
-	finalizeSessionLink(name, branch, fmt.Sprintf("pr-%d", number))
-	if !isTerminal(os.Stdout) {
-		fmt.Println(path)
+	if pendingKey != "" {
+		finalizeSessionLink(name, branch, pendingKey)
 	}
+	emitWorkspacePath(path)
 	return nil
 }
 
@@ -191,7 +198,7 @@ func runWorkspaceFromPR(prRef, nameFlag string) error {
 //
 // Pure, so it is unit-testable.
 func parsePRRef(s string) (repoToken string, number int, err error) {
-	if strings.Contains(s, "://") || strings.HasPrefix(s, "git@") {
+	if strings.Contains(s, "://") || paths.IsSSHURL(s) {
 		host, path, perr := paths.ParseURL(s)
 		if perr != nil {
 			return "", 0, perr
@@ -217,12 +224,84 @@ func parsePRRef(s string) (repoToken string, number int, err error) {
 	return repoToken, n, nil
 }
 
+// prPendingKey is the rendezvous key the pre-exec hook and from-pr agree on
+// when no --name pins the workspace name up front: the PR number plus the
+// repo token exactly as spelled in the command (both sides parse the same
+// command line), so PRs with the same number in different repos never share a
+// key. Pure, so it is unit-testable.
+func prPendingKey(repoToken string, number int) string {
+	return fmt.Sprintf("pr-%d-%s", number, strings.ReplaceAll(repoToken, "/", "-"))
+}
+
+// resolvePRRepo resolves a PR reference's repo token against the config.
+// Beyond the standard name resolution, a token that names an upstream (the
+// URL form, or owner/repo) also matches entries pinned to a track — the PR is
+// against the upstream, which every pinned version shares — preferring the
+// default-track entry when several match. A miss points at `shed add`, since
+// from-pr is often the very first touch of a repo (an agent handed a PR URL).
+func resolvePRRepo(c *config.Config, token string) (*config.Repo, error) {
+	repo, err := c.Resolve(token)
+	if err == nil {
+		return repo, nil
+	}
+	var coded *errs.Coded
+	if !errors.As(err, &coded) || coded.Code != errs.NotFound {
+		return nil, err
+	}
+	var matches []*config.Repo
+	var names []string
+	for i := range c.Repos {
+		key, kerr := c.Repos[i].MirrorKey()
+		if kerr != nil {
+			continue
+		}
+		if key == token || strings.HasSuffix(key, "/"+token) {
+			matches = append(matches, &c.Repos[i])
+			if n, nerr := c.Repos[i].ResolvedName(); nerr == nil {
+				names = append(names, n)
+			}
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, errs.New(errs.NotFound,
+			"repo %q is not in the library; add it first with `shed add %s`, then re-run",
+			token, addSuggestion(token))
+	case 1:
+		return matches[0], nil
+	}
+	for _, m := range matches {
+		if m.Track == "" {
+			return m, nil
+		}
+	}
+	return nil, errs.New(errs.NotFound,
+		"%q matches several pinned versions (%s); name one of them explicitly", token, strings.Join(names, ", "))
+}
+
+// ghSlugForRepo derives the GitHub host and owner/repo slug for a config
+// repo, preferring the URL-derived mirror key over the resolved name — names
+// can be user overrides ("name = ..." in config) that gh would reject or,
+// worse, that parse into the wrong host. Mirrors prune.go's slug choice.
+func ghSlugForRepo(repo *config.Repo, name string) (host, slug string, ok bool) {
+	if key, err := repo.MirrorKey(); err == nil {
+		if h, s, ok := ghRepoFromName(key); ok {
+			return h, s, true
+		}
+	}
+	return ghRepoFromName(name)
+}
+
 // addSuggestion turns a from-pr repo token into what the user would pass to
-// `shed add`: github.com URLs shorten to gh shorthand ("owner/repo"), other
-// hosts keep the full token. Pure, so it is unit-testable.
+// `shed add`: github.com URLs shorten to gh shorthand ("owner/repo"); a bare
+// repo name gains an <owner>/ placeholder, because `shed add <one-segment>`
+// means an owner, not a repo. Pure, so it is unit-testable.
 func addSuggestion(token string) string {
 	if rest, ok := strings.CutPrefix(token, "github.com/"); ok {
 		return rest
+	}
+	if !strings.Contains(token, "/") {
+		return "<owner>/" + token
 	}
 	return token
 }
@@ -238,7 +317,8 @@ func fromPRBranch(info forge.PR, ghErr error, nameFlag string, number int) (stri
 			fmt.Sprintf("%v — created from refs/pull/%d/head without PR metadata; nothing is wired for pushing back", ghErr, number))
 	} else if info.State != "" && info.State != "OPEN" {
 		warnings = append(warnings,
-			fmt.Sprintf("PR #%d is %s; the workspace will hold its final state", number, strings.ToLower(info.State)))
+			fmt.Sprintf("PR #%d is %s; the workspace will hold its final state (`shed prune` will later see it as landed)",
+				number, strings.ToLower(info.State)))
 	}
 	if nameFlag != "" {
 		return nameFlag, warnings, nil
@@ -255,6 +335,14 @@ func fromPRBranch(info forge.PR, ghErr error, nameFlag string, number int) (stri
 	return info.HeadRefName, warnings, nil
 }
 
+// prRefState is what the freshly synced mirror knows that planPRCheckout
+// needs: whether the sync really refreshed it, and which refs it holds.
+type prRefState struct {
+	synced       bool // the pre-create sync brought the mirror up to date
+	headInMirror bool // refs/remotes/origin/<HeadRefName> exists in the mirror
+	branchTaken  bool // the chosen workspace name is itself an upstream branch
+}
+
 // prCheckout is how runWorkspaceFromPR realizes the PR's head commit in the
 // new workspace.
 type prCheckout struct {
@@ -264,18 +352,25 @@ type prCheckout struct {
 	trackRef  string // fork branch the workspace branch should track ("" = none)
 }
 
-// planPRCheckout decides the checkout strategy after the sync. The plain path
-// — the workspace branch IS the PR's head branch, present in the mirror —
-// needs no extra fetch: workspace.New checks it out with origin tracking, so
-// `git push` updates the PR. Everything else (a fork PR, a deleted or
-// not-yet-synced head branch, no gh, a --name override) goes through
-// refs/pull/<n>/head, which exists for every PR regardless; the override case
-// takes it too because workspace.New prefers an existing upstream branch of
-// the same name over any base, and the hard reset makes the tip right no
-// matter what the clone checked out. Pure, so it is unit-testable.
-func planPRCheckout(info forge.PR, ghErr error, mirrorHasHead bool, branch, repoURL, host string) prCheckout {
-	if ghErr == nil && !info.CrossRepo && mirrorHasHead && branch == info.HeadRefName {
-		return prCheckout{}
+// planPRCheckout decides the checkout strategy after the sync. An OPEN
+// same-repo PR whose head branch is in the freshly refreshed mirror is
+// realized offline: as a plain branch checkout with origin tracking when the
+// workspace shares the branch's name, or as a new branch based on it under a
+// --name override — unless the override name is itself an upstream branch,
+// which workspace.New would check out in preference to any base. Everything
+// else — a fork PR, no gh, a deleted or not-yet-synced head branch, a
+// degraded sync whose branch tips can't be trusted, a merged/closed PR whose
+// branch may have moved past the PR's final head — goes through
+// refs/pull/<n>/head, which GitHub freezes to the PR's actual head. Pure, so
+// it is unit-testable.
+func planPRCheckout(info forge.PR, ghErr error, refs prRefState, branch, repoURL, host string) prCheckout {
+	if ghErr == nil && !info.CrossRepo && info.State == "OPEN" && refs.synced && refs.headInMirror {
+		if branch == info.HeadRefName {
+			return prCheckout{}
+		}
+		if !refs.branchTaken {
+			return prCheckout{base: info.HeadRefName}
+		}
 	}
 	co := prCheckout{pullFetch: true}
 	if ghErr == nil && info.CrossRepo && info.HeadOwner != "" && info.HeadName != "" {

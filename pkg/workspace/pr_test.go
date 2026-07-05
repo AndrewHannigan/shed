@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/AndrewHannigan/shed/pkg/gitx"
 )
 
 // prTestRepos builds the shape from-pr works against: an upstream whose main
@@ -45,17 +47,17 @@ func prTestRepos(t *testing.T) (string, string, string) {
 
 func revParse(t *testing.T, dir, rev string) string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", dir, "rev-parse", rev).Output()
-	if err != nil {
-		t.Fatalf("rev-parse %s: %v", rev, err)
+	sha, ok := gitx.RevParse(dir, rev)
+	if !ok {
+		t.Fatalf("rev-parse %s in %s failed", rev, dir)
 	}
-	return strings.TrimSpace(string(out))
+	return sha
 }
 
 func TestCheckoutPRHead(t *testing.T) {
 	_, ws, prSHA := prTestRepos(t)
 
-	if err := CheckoutPRHead(ws, 7); err != nil {
+	if _, err := CheckoutPRHead(ws, 7); err != nil {
 		t.Fatalf("CheckoutPRHead: %v", err)
 	}
 	if got := revParse(t, ws, "HEAD"); got != prSHA {
@@ -81,7 +83,7 @@ func TestCheckoutPRHeadClearsTracking(t *testing.T) {
 	_, ws, _ := prTestRepos(t)
 	git(t, ws, nil, "branch", "-q", "--set-upstream-to=origin/main")
 
-	if err := CheckoutPRHead(ws, 7); err != nil {
+	if _, err := CheckoutPRHead(ws, 7); err != nil {
 		t.Fatalf("CheckoutPRHead: %v", err)
 	}
 	if out, err := exec.Command("git", "-C", ws, "rev-parse", "--abbrev-ref", "@{u}").Output(); err == nil {
@@ -91,10 +93,10 @@ func TestCheckoutPRHeadClearsTracking(t *testing.T) {
 
 func TestCheckoutPRHeadMissingPR(t *testing.T) {
 	_, ws, _ := prTestRepos(t)
-	if err := CheckoutPRHead(ws, 999); err == nil {
+	if _, err := CheckoutPRHead(ws, 999); err == nil {
 		t.Fatal("CheckoutPRHead(999) should fail: no such pull ref upstream")
 	}
-	if err := CheckoutPRHead(ws, 0); err == nil {
+	if _, err := CheckoutPRHead(ws, 0); err == nil {
 		t.Fatal("CheckoutPRHead(0) should fail fast on an invalid number")
 	}
 }
