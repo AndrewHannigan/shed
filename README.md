@@ -20,7 +20,7 @@ Agent: reads ~/.shed/repos/github.com/octocat/Hello-World   (read-only, always f
 ```
 
 - 🤝 **One system, every agent** — Claude Code, Cursor CLI, and opencode all manage repos and workspaces the same way, so parallel sessions never step on each other in the same repo.
-- 🌱 **Never a stale branch** — repos refresh in the background at session start and again right before every workspace is created, so an agent never unintentionally branches off out-of-date code.
+- 🌱 **Never a stale branch** — repos refresh in the background via a SessionStart hook and again right before every workspace is created, so an agent never unintentionally branches off out-of-date code.
 - ⚡ **Workspaces in seconds, even offline** — `shed workspace new` is a purely local clone (objects hardlink from a shared per-upstream mirror), with the network never on the critical path. The result is a completely ordinary git repo, `origin` pointing at the real upstream — push as if you'd cloned it from there.
 - 🛡 **A baseline that can't be broken** — repo checkouts are read-only and self-repairing; agents grep and read across the whole catalog, and nothing they do (and nothing shed does in the background) can corrupt the reference copies or lose workspace work.
 - 🔁 **Pick up where you left off** — `shed resume <workspace>` reopens the exact agent session that created a workspace — same agent, same session id, same directory — so a half-finished task is one command away.
