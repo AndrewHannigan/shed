@@ -317,7 +317,25 @@ func HalfCreated(repo, name string) bool {
 
 func originIsShedOwned(wsPath string) bool {
 	origin, err := gitx.Output(wsPath, "remote", "get-url", "origin")
-	return err == nil && strings.HasPrefix(origin, paths.DataDir()+string(filepath.Separator))
+	return err == nil && pathWithin(origin, paths.DataDir())
+}
+
+// pathWithin reports whether p lies inside root, tolerating a symlinked
+// component (a symlinked $HOME is common on macOS and NixOS): the raw
+// strings are compared first, then both sides symlink-resolved. Without the
+// resolved comparison, a half-created workspace goes undetected — refused as
+// "already exists" instead of repaired — whenever the origin path git
+// recorded and the DataDir shed computes differ only by a symlink. A p that
+// is not a local path (a real workspace's https origin) fails EvalSymlinks
+// and falls back to the raw comparison alone.
+func pathWithin(p, root string) bool {
+	sep := string(filepath.Separator)
+	if strings.HasPrefix(p, root+sep) {
+		return true
+	}
+	rp, err1 := filepath.EvalSymlinks(p)
+	rroot, err2 := filepath.EvalSymlinks(root)
+	return err1 == nil && err2 == nil && strings.HasPrefix(rp, rroot+sep)
 }
 
 // usesLFS reports whether any committed .gitattributes declares the LFS

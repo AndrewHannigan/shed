@@ -76,13 +76,7 @@ func runPrune(dryRun, force, yes bool, ifOlderThan time.Duration) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	names := make([]string, 0, len(c.Repos))
-	for _, r := range c.Repos {
-		if n, err := r.ResolvedName(); err == nil {
-			names = append(names, n)
-		}
-	}
-	infos, err := workspace.List(names)
+	infos, err := workspace.List(repoNames(c))
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
@@ -242,7 +236,12 @@ func pruneMaintenance(c *config.Config, dryRun bool) error {
 		}
 	}
 
-	// (2) Mirror gc + worktree prune, (3) orphan-mirror removal.
+	// (2) Mirror gc + worktree prune, (3) orphan-mirror removal. A crashed
+	// removal leaves a renamed-aside tree nothing reclaims by key; sweep
+	// those first.
+	if !dryRun {
+		mirror.RemoveRemnants()
+	}
 	onDisk, err := mirror.OnDisk()
 	if err != nil {
 		return nil

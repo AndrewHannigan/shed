@@ -306,3 +306,38 @@ func TestMetaLifecycle(t *testing.T) {
 		t.Errorf("dropped catalog should have no status, got %+v", st)
 	}
 }
+
+// Remove renames the mirror aside before deleting so it vanishes atomically
+// (a racer can never recreate the lockfile inside a half-deleted mirror), and
+// RemoveRemnants reclaims the renamed-aside tree a crashed Remove leaves.
+func TestRemoveAndRemnantSweep(t *testing.T) {
+	requireGit(t)
+	t.Setenv("HOME", t.TempDir())
+	up := makeUpstream(t)
+	if err := Create(up, key, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(key, time.Second); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if Exists(key) {
+		t.Fatal("mirror still exists after Remove")
+	}
+	if _, err := os.Stat(paths.MirrorPath(key) + removeTmpSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rename-aside temp survived a completed Remove: stat err = %v", err)
+	}
+
+	// Simulate a crash between the rename and the delete: a renamed-aside
+	// tree that nothing reclaims by key.
+	remnant := paths.MirrorPath(key) + removeTmpSuffix
+	if err := os.MkdirAll(filepath.Join(remnant, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := OnDisk(); err != nil || len(keys) != 0 {
+		t.Fatalf("OnDisk should skip a renamed-aside remnant, got %v (err %v)", keys, err)
+	}
+	RemoveRemnants()
+	if _, err := os.Stat(remnant); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("RemoveRemnants left the remnant: stat err = %v", err)
+	}
+}

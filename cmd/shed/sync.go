@@ -276,9 +276,13 @@ func syncMirrorJob(job mirrorJob, keep map[string]bool, ifOlderThan time.Duratio
 	}
 	lock.Unlock() // released between the network phase and the catalog phase
 
+	// The mirror's size is shared by every repo of the job (catalog checkouts
+	// carry no objects of their own), so walk it once, not once per repo.
+	size, _ := mirror.Size(job.key)
+
 	results := make([]syncResult, 0, len(job.repos))
 	for _, t := range job.repos {
-		results = append(results, syncCatalog(job.key, t, refs[t.name], resolveErrs[t.name], fetchErr, !fetch, start))
+		results = append(results, syncCatalog(job.key, t, refs[t.name], resolveErrs[t.name], fetchErr, !fetch, size, start))
 	}
 	return results
 }
@@ -289,7 +293,7 @@ func syncMirrorJob(job mirrorJob, keep map[string]bool, ifOlderThan time.Duratio
 // checkout is materialized or kept from the last-synced state — but the repo
 // reports the fetch failure and no fresh sync is recorded (the data really is
 // stale).
-func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr, fetchErr error, mirrorSkipped bool, start time.Time) syncResult {
+func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr, fetchErr error, mirrorSkipped bool, size int64, start time.Time) syncResult {
 	r := syncResult{Name: t.name}
 
 	lock, err := mirror.AcquireLock(key, true, syncLockTimeout)
@@ -298,14 +302,7 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr, fetchErr
 		// lock, so a mutateMeta here would race the very process that does
 		// (and could clobber its fresh records). The holder is actively
 		// syncing this mirror anyway — its outcome is the truthful record.
-		r.Status = "error"
-		if errors.Is(err, mirror.ErrLocked) {
-			r.locked = true
-			r.Error = fmt.Sprintf("locked: could not acquire %s within %s (held by another shed process)",
-				paths.MirrorLockFile(key), syncLockTimeout)
-		} else {
-			r.Error = err.Error()
-		}
+		r = fillLockErr(r, key, err)
 		r.DurationMs = time.Since(start).Milliseconds()
 		return r
 	}
@@ -352,9 +349,7 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr, fetchErr
 			} else {
 				r.Note = note
 			}
-			if size, err := mirror.Size(key); err == nil {
-				r.SizeBytes = size
-			}
+			r.SizeBytes = size
 			r.DurationMs = time.Since(start).Milliseconds()
 			return r
 		}
@@ -390,9 +385,7 @@ func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr, fetchErr
 
 	r.Status = "ok"
 	r.Note = note
-	if size, err := mirror.Size(key); err == nil {
-		r.SizeBytes = size
-	}
+	r.SizeBytes = size
 	r.DurationMs = time.Since(start).Milliseconds()
 	return r
 }
@@ -517,18 +510,26 @@ func failAllFetch(job mirrorJob, start time.Time, err error) []syncResult {
 func failAllLock(job mirrorJob, start time.Time, err error) []syncResult {
 	out := make([]syncResult, 0, len(job.repos))
 	for _, t := range job.repos {
-		r := syncResult{Name: t.name, Status: "error"}
-		if errors.Is(err, mirror.ErrLocked) {
-			r.locked = true
-			r.Error = fmt.Sprintf("locked: could not acquire %s within %s (held by another shed process)",
-				paths.MirrorLockFile(job.key), syncLockTimeout)
-		} else {
-			r.Error = err.Error()
-		}
+		r := fillLockErr(syncResult{Name: t.name}, job.key, err)
 		r.DurationMs = time.Since(start).Milliseconds()
 		out = append(out, r)
 	}
 	return out
+}
+
+// fillLockErr classifies a mirror-lock acquisition failure onto r: a timeout
+// becomes the user-facing "locked: ..." message (and sets the locked flag so
+// summarizeSync exits with the Locked code), anything else passes through.
+func fillLockErr(r syncResult, key string, err error) syncResult {
+	r.Status = "error"
+	if errors.Is(err, mirror.ErrLocked) {
+		r.locked = true
+		r.Error = fmt.Sprintf("locked: could not acquire %s within %s (held by another shed process)",
+			paths.MirrorLockFile(key), syncLockTimeout)
+	} else {
+		r.Error = err.Error()
+	}
+	return r
 }
 
 // finishErr records a repo-level sync failure: fills Error/DurationMs and

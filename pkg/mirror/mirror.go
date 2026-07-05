@@ -288,8 +288,20 @@ func PruneWorktrees(key string) error {
 	return gitx.Run(paths.MirrorPath(key), "worktree", "prune")
 }
 
+// removeTmpSuffix marks a mirror renamed aside by Remove, mid-deletion. It
+// ends in ".tmp" so OnDisk skips it, and is distinct from Create's ".tmp" so
+// the two can never collide on one path.
+const removeTmpSuffix = ".rm.tmp"
+
 // Remove deletes the mirror from disk under its exclusive lock. Only prune
 // calls this, and only for mirrors no config entry references.
+//
+// The mirror is renamed aside before the delete, so it vanishes atomically:
+// a racing AcquireLock either sees the dir gone (a clean "not on disk"
+// error) or blocks on the old lockfile's inode until we finish. A plain
+// RemoveAll would instead unlink the lockfile mid-delete, and a racer could
+// then create a fresh lockfile at the same path and "acquire" a mirror
+// being deleted out from under it.
 func Remove(key string, timeout time.Duration) error {
 	if !Exists(key) {
 		return nil
@@ -300,7 +312,14 @@ func Remove(key string, timeout time.Duration) error {
 	}
 	defer lock.Unlock()
 	p := paths.MirrorPath(key)
-	if err := os.RemoveAll(p); err != nil {
+	tmp := p + removeTmpSuffix
+	if err := os.RemoveAll(tmp); err != nil { // leftover of a crashed prior Remove
+		return err
+	}
+	if err := os.Rename(p, tmp); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(tmp); err != nil {
 		return err
 	}
 	// Drop the sibling creation lockfile too, before pruning empty parents
@@ -308,6 +327,28 @@ func Remove(key string, timeout time.Duration) error {
 	_ = os.Remove(paths.MirrorCreateLockFile(key))
 	paths.PruneEmptyDirs(filepath.Dir(p), paths.MirrorsDir())
 	return nil
+}
+
+// RemoveRemnants sweeps "<key>.rm.tmp" leftovers — mirrors a crashed Remove
+// renamed aside but never finished deleting. Nothing reclaims those by key
+// (the mirror is already invisible to OnDisk and Exists), so prune calls
+// this once per maintenance pass. Concurrency-safe: a renamed-aside tree is
+// garbage by definition, and a live Remove deleting the same tree just races
+// this sweep to the same end state. Create's "<key>.tmp" dirs are NOT swept
+// — a live clone may own one; Create reclaims those under its creation lock.
+func RemoveRemnants() {
+	root := paths.MirrorsDir()
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || !info.IsDir() || p == root {
+			return nil
+		}
+		if strings.HasSuffix(info.Name(), removeTmpSuffix) {
+			_ = os.RemoveAll(p)
+			paths.PruneEmptyDirs(filepath.Dir(p), root)
+			return filepath.SkipDir
+		}
+		return nil
+	})
 }
 
 // OnDisk returns the keys of every mirror present under MirrorsDir, for

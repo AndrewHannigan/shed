@@ -239,3 +239,39 @@ func writeFile(t *testing.T, dir, name, content string) {
 		t.Fatal(err)
 	}
 }
+
+// pathWithin must tolerate a symlinked component on either side (a symlinked
+// $HOME is common on macOS and NixOS): git may record the resolved form of a
+// clone source while shed computes the symlinked form, or vice versa. A raw
+// mismatch there must still count as "inside" — otherwise a half-created
+// workspace is refused as "already exists" instead of repaired. Non-path
+// origins (https URLs) must never match.
+func TestPathWithinResolvesSymlinks(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "repos", "x"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+
+	inside := filepath.Join(real, "repos", "x")
+	if !pathWithin(inside, real) {
+		t.Error("raw prefix match should hold")
+	}
+	// Origin recorded via the symlink, root computed resolved — and vice versa.
+	if !pathWithin(filepath.Join(link, "repos", "x"), real) {
+		t.Error("symlinked path inside resolved root should match")
+	}
+	if !pathWithin(inside, link) {
+		t.Error("resolved path inside symlinked root should match")
+	}
+	if pathWithin("https://github.com/acme/widget.git", real) {
+		t.Error("a URL origin must never count as shed-owned")
+	}
+	if pathWithin(filepath.Join(base, "elsewhere"), real) {
+		t.Error("a sibling path must not count as inside")
+	}
+}
