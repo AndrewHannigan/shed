@@ -10,7 +10,7 @@
      hook; keep it above the fold. -->
 <!-- ![shed in action](docs/demo.gif) -->
 
-An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. **shed** fixes the layer underneath — a read-only, always-fresh library of your repos that every agent can read, and cheap isolated workspaces the moment one needs to write:
+An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. All three have the same root cause: nothing owns the local copies your agents work from. **shed** owns that layer. Agents read from a read-only, always-fresh library and write in cheap disposable workspaces:
 
 ```text
 You:   "Fix the broken link in octocat/Hello-World's README"
