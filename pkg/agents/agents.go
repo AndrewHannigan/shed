@@ -14,8 +14,10 @@ import (
 
 // DocContent is the shed guide bundled into the binary. It is the
 // body emitted by `shed __session-context` and injected into each
-// agent's context via its SessionStart hook. Because it ships with the
-// binary, it is always current — there is no installed copy to drift.
+// agent's context via its session-context integration (a SessionStart
+// hook for Claude and Cursor, the dropped-in plugin for opencode).
+// Because it ships with the binary, it is always current — there is no
+// installed copy to drift.
 //
 //go:embed embed/guide.md
 var DocContent []byte
@@ -30,7 +32,7 @@ var TourContent []byte
 
 // InstallOptions tunes a per-agent install. Most agents ignore most options.
 type InstallOptions struct {
-	NoBgSync bool // Claude only: skip the SessionStart hook.
+	NoBgSync bool // skip the bg-sync hook (session-context is always installed); ignored by opencode.
 }
 
 // Agent is the interface every supported agent implements.
@@ -119,8 +121,10 @@ func allKeys() []string {
 	return out
 }
 
-// PathsToRegister returns the two shed directories that every agent
-// must be told it can access.
+// PathsToRegister returns the two shed directories an agent with a
+// filesystem allowlist must be told it can access. Only Claude has one;
+// Cursor and opencode register no paths (the chmod a-w on repos/ enforces
+// read-only regardless).
 func PathsToRegister() []string {
 	return []string{paths.ReposDir(), paths.WorkspacesDir()}
 }

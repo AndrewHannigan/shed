@@ -1,6 +1,6 @@
 # Design: `shed resume` — resume an agent session from its workspace
 
-Status: proposal (research branch `claude/session-resume-research`)
+Status: implemented (originated as a proposal on research branch `claude/session-resume-research`)
 Author: research spike
 
 ## Goal
@@ -147,13 +147,15 @@ This ordering also gives the safety model for free: because the link lives
 inside the workspace dir, removing the workspace removes the link automatically
 (§3, §4-lifecycle) — there is no central link store to keep in sync.
 
-- **Fallback.** If a command is shell-wrapped so the name can't be parsed
-  (`cd x && FOO=1 shed ws new …`), no `pending/<name>` is written;
-  `workspace new` falls back to the most recent pending intent for this cwd, and
-  if there is none, simply creates an unlinked workspace (resume unavailable for
-  it — a graceful degradation, never an error).
-- **Pending records are ephemeral**: short-TTL, cleared on finalize, and safe
-  to garbage-collect on age since a stale one only costs a missed link.
+- **Fallback.** The hook's parser tokenizes the command and tolerates common
+  shell wrapping (`cd x && FOO=1 shed ws new …` still parses). If the name
+  can't be recovered, no `pending/<name>` is written and `workspace new`
+  (absent an env override) simply creates an unlinked workspace — there is no
+  cwd-based fallback (resume unavailable for it — a graceful degradation,
+  never an error).
+- **Pending records are cleared on finalize** (`workspace new` takes and
+  removes the matching record). An unmatched record is inert — a stale one
+  only costs a missed link — so no TTL or age-based GC is implemented.
 
 ### 3. The link record
 
@@ -173,8 +175,8 @@ stored repos:
 Storing it inside the workspace (rather than a central index) means it is
 removed automatically when the workspace is — no separate cleanup, and the
 "link never outlives or endangers its workspace" property is structural. Resume
-reads it directly after `FindByName` locates the workspace dir; no central index
-to scan or keep consistent.
+reads it directly after `LocateByName` finds the workspace dir; no central
+index to scan or keep consistent.
 
 All three fields are always recorded — `cwd` included for every agent (the hook
 supplies it authoritatively; the env override defaults it), since resume always
@@ -186,9 +188,11 @@ supplies it authoritatively; the env override defaults it), since resume always
   `shed workspace new` makes a distinct (uniquely-named) workspace with its own
   link record pointing at the same session id; resuming any of them lands in
   that one session. It just works because the link lives per-workspace.
-- *Multiple sessions per workspace* — **most-recent-session-wins.** A workspace
-  re-touched by a newer session has its single link overwritten to point at the
-  newer one (last writer wins). No link history; keep it straightforward.
+- *Multiple sessions per workspace* — **the creating session wins.** The link
+  is written once, at creation (`workspace new` is the only writer, and it
+  refuses an existing name), so a workspace later touched by a different
+  session keeps its original link and resume reopens the session that created
+  it. No link history; keep it straightforward.
 
 ### 4. Workspace name is the identity (not the git branch)
 
@@ -222,15 +226,15 @@ seed branch from the name; not needed now.)
 
 The on-disk layout stays `<repo>/<name>` (so the path still encodes the repo),
 but the name alone is now a key, so `shed resume <name>` resolves to exactly
-one workspace — no `<repo>` needed. A `workspace.FindByName(name)` lookup
+one workspace — no `<repo>` needed. A `workspace.LocateByName(name)` lookup
 backs both the creation guard and resume.
 
 Tradeoff: no two live workspaces can share a name — most visibly if you tried
 two `main` workspaces across repos. This fits shed's grain (workspaces are
 named per task, e.g. `fix-readme-link`), and the failure is loud and actionable
 ("workspace `main` already exists for `other/repo`; pick a distinct name").
-The same invariant lets `shed path` / `workspace rm` accept name-only too,
-though that's out of scope here.
+The same invariant lets `shed path` / `workspace rm` accept name-only too —
+both do, via the same lookup.
 
 ### 5. `shed resume`
 
@@ -340,11 +344,13 @@ of `--help`.)
    is not.
    - A link rides along with its workspace: removed only when the workspace is
      removed. No standalone link-reaping job.
-   - A dangling link (session transcript gone / too old to resume) is handled
-     **lazily at resume**: `shed resume <name>` detects the missing transcript
-     and reports "that session is no longer resumable — the workspace is intact
-     at `<path>`" instead of surfacing a cryptic agent error. Optionally it may
-     clear the now-dead link in passing, but it never touches the workspace.
+   - A dangling link is handled **lazily at resume**, and only partially:
+     `shed resume <name>` verifies the session's launch *directory* still
+     exists and reports "the session's directory `<cwd>` no longer exists;
+     cannot resume (workspace is intact at `<path>`)". A missing or expired
+     *transcript* with an intact directory is not detected — the agent's own
+     error surfaces in that case — and the dead link is left in place; resume
+     never touches the workspace itself.
 
 ## Implementation sequence
 
@@ -352,17 +358,17 @@ of `--help`.)
    already the directory name, not the live git branch) — including the
    `shed ls` / `workspace ls` column header (BRANCH → NAME). Enforce unique
    workspace names in `shed workspace new` (reject a `<name>` already present
-   under any repo, naming the conflict). Add a `workspace.FindByName(name)`
+   under any repo, naming the conflict). Add a `workspace.LocateByName(name)`
    lookup used by both the guard and resume.
 2. Pre-exec hook subcommand (`shed __on-tool-call`) that parses the `<name>`
    and writes the `pending/<name>` intent record.
 3. `shed workspace new` finalize step: write the `.git/shed.session` sidecar
    from the `SHED_SESSION_*` env override (no visible flag) or the pending
    intent, then clear the pending record.
-4. `shed resume <name>` command (`ExactArgs(1)` name resolve + exec/`--print` +
-   `--` passthrough). Optionally annotate `shed ls` workspaces with their
-   linked session/agent.
+4. `shed resume <name>` command (single-name enforcement done by hand via
+   `ArgsLenAtDash`, per §5, so the `--` passthrough parses; + exec/`--print`).
+   Optionally annotate `shed ls` workspaces with their linked session/agent.
 5. `shed init` wiring: install the pre-exec hook for each agent; extend the
    opencode plugin.
 6. Update the embedded guide so agents know to pick distinct workspace names and
-   that `shed resume` exists.
+   that `shed resume` exists. *(Not yet done — the guide mentions neither.)*

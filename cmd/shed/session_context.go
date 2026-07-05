@@ -44,8 +44,9 @@ whose additional_context field is injected into the conversation:
 
 The guide is generated from the running binary, so it is always current —
 there is no on-disk doc to drift after an upgrade. It also appends a live
-snapshot of the library (the "ls" table) so the agent knows which
-repos are available without having to run it.`,
+snapshot of the repos the user most recently had a workspace in (capped,
+newest first, with a pointer to 'shed ls' for the full library) so the
+agent starts each session oriented to the active work.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --text is the deprecated alias for --agent opencode (the raw

@@ -175,8 +175,9 @@ Creation-time config:
 **Mirror identity.** "One per upstream" is keyed by the URL-derived
 `host/owner/repo` path, not the raw URL string. Two config entries for one
 upstream over different transports (`https://…` and `git@…:`) share a
-mirror; it fetches with the first entry's URL, and config validation warns
-when entries sharing a mirror disagree on transport.
+mirror; it fetches with the URL it was created with (nothing re-points the
+mirror's origin afterward), and config validation warns when entries
+sharing a mirror disagree on transport.
 
 ## Config: the `track` field
 
@@ -254,7 +255,7 @@ Unchanged from earlier iterations:
 ├── workspaces/                               # user/agent-facing
 │   └── github.com/apache/
 │       ├── airflow/fix-dag/
-│       └── airflow@v2-7-stable/fix-dag/      # same ws name, no collision
+│       └── airflow@v2-7-stable/fix-dag-v2/   # ws names are globally unique across repos
 ├── logs/                                     # user-serviceable when debugging
 └── .internal/                                # plumbing — never printed as a destination
     ├── mirrors/
@@ -319,11 +320,12 @@ upstream-deleted tags (both verified).
 1. best-effort mirror fetch + catalog ff — ALWAYS attempted, so the
    workspace forks from the freshest code; on failure, warn and proceed
    from the last synced state (same graceful degradation as today;
-   hard-fail only if no mirror exists at all)
+   hard-fail only when no valid catalog checkout exists locally to fork
+   from)
 2. git clone --branch <base> [--config k=v ...] -- <catalog-path> <dest>
    (objects hardlink from the mirror store through the worktree — verified)
-3. git remote set-url origin <upstream-url>
-4. new-branch case: git checkout -b <name>, as today
+3. new-branch case: git checkout -b <name>, as today
+4. git remote set-url origin <upstream-url>
 ```
 
 - **Base branch defaulting**: a workspace created via
@@ -338,10 +340,11 @@ upstream-deleted tags (both verified).
   and `checkout -b <br> origin/<br>`. Still offline, still cheap
   (verified); the fetched delta is copied not hardlinked, which is fine at
   workspace lifetimes.
-- **Crash window**: a crash between steps 2 and 3 leaves origin pointing
-  at a shed-owned path; the mirror's pre-receive hook makes any push there
-  fail loudly, and `workspace new` on an already-existing directory
-  validates its origin URL and repairs or replaces. Cleanup at any step is
+- **Crash window**: a crash after the clone but before step 4's set-url
+  leaves origin pointing at a shed-owned path; the mirror's pre-receive
+  hook makes any push there fail loudly, and `workspace new` on an
+  already-existing directory validates its origin URL and repairs or
+  replaces. Cleanup at any step is
   `rm -rf <dest>`. Clone failures retry once (insurance against losing a
   race with a rogue repack — see gc).
 - **LFS**: the mirror never smudges, so it has pointer files only; clone

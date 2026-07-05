@@ -50,8 +50,10 @@ Then say, briefly:
   `~/.shed/repos/…` — a pristine copy that's always there and safe to read.
 
 Now prove it's read-only: find a file in that store (e.g. the `README`) and
-**try to edit it in place** — append a line or `touch` it. It **fails with a
-permission error.** Show the user the actual error.
+**try to edit it in place** — append a line to it (e.g. `echo test >> README`).
+It **fails with a permission error.** Show the user the actual error. (Don't
+use `touch` for this — a file's owner may update its timestamps even without
+write permission, so `touch` succeeds and proves nothing.)
 
 Then explain *why* this is the design, briefly: the store is locked down so your
 agent can't clobber it — it stays a clean, always-current baseline, never

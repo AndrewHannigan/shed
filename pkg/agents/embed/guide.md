@@ -14,7 +14,7 @@ You have a local library of git repos managed by `shed`.
   and prints its path. It syncs the repo first so workspaces are always up to date
   when created (offline it forks from the last synced state). The workspace is an
   ordinary clone whose origin is the real upstream — commit and push as normal.
-- **Prefer shed repos and workspaces this over any other checkout of the repo you happen to find on disk.** Library
+- **Prefer shed repos and workspaces over any other checkout of the repo you happen to find on disk.** Library
   repos are kept up to date automatically, so a fresh workspace is guaranteed current; a
   stray clone sitting elsewhere on disk — a sibling, or a child of your working directory —
   may be stale.
@@ -26,8 +26,9 @@ You have a local library of git repos managed by `shed`.
 - **Need a repo not in the library?** Ask the user to run `shed add <repo>`
   (a full URL or GitHub `owner/repo` shorthand).
 - **Track a whole user/org?** `shed add <owner>` (a bare `owner` or
-  `https://github.com/<owner>`) tracks every repo under that owner; `sync` discovers
-  and fetches new ones automatically. Needs `gh` installed and authenticated.
+  `https://github.com/<owner>`) tracks that owner's repos (non-fork, non-archived
+  by default); `sync` discovers and fetches new ones automatically. Needs `gh`
+  installed and authenticated.
 - **More details**: `shed help <topic>` or `shed <cmd> --help`.
 - **New to shed? Give the user a tour.** If the user asks for an intro, a tour, a
   demo, or "how does shed work?", run `shed __welcome-tour` and follow what it

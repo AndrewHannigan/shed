@@ -179,8 +179,8 @@ no re-init needed.
 Reversing integration ('shed init --uninstall')
   Removes exactly the entries 'shed init' added to each agent's config:
     - the allowed-directory entries in Claude's settings.json
-    - the SessionStart hooks (session-context and bg-sync) / the
-      opencode plugin file
+    - the hooks (session-context, bg-sync, and the on-tool-call hook
+      that links workspaces to sessions) / the opencode plugin file
   A sidecar state file (~/.shed/agents.state.json) records which entries
   are shed's, so any entries you added yourself are preserved. This does
   NOT remove the shed binary, and by default leaves ~/.config/shed/ and
@@ -500,20 +500,24 @@ sidecar state file so 'shed init --uninstall' can reverse precisely):
      drifts after an upgrade.
   3. A SessionStart hook running 'shed __bg-sync', which refreshes
      the store in the background (skip with --no-bg-sync).
+  4. A PreToolUse hook running 'shed __on-tool-call', gated natively to
+     'shed workspace new' commands, which links a new workspace to the
+     session that created it (for 'shed resume').
 
-cursor is also a SessionStart-hook agent, but its hooks live in
-~/.cursor/hooks.json under 'hooks.sessionStart' — a flatter, camelCase
-shape than Claude's. 'init' adds the same two hooks there (session-
-context + bg-sync); --agent cursor emits a '{"additional_context":"…"}'
-JSON object Cursor injects into the conversation. Cursor has no path
-allowlist (the chmod a-w on repos/ enforces read-only), so no paths are
-registered.
+cursor is also a hook-based agent, but its hooks live in
+~/.cursor/hooks.json under camelCase event names — a flatter shape than
+Claude's. 'init' adds the session-context + bg-sync hooks under
+'sessionStart' and the on-tool-call hook under 'beforeShellExecution';
+--agent cursor emits a '{"additional_context":"…"}' JSON object Cursor
+injects into the conversation. Cursor has no path allowlist (the chmod
+a-w on repos/ enforces read-only), so no paths are registered.
 
-opencode has no SessionStart hook or path allowlist, so 'init' instead
+opencode has no settings hooks or path allowlist, so 'init' instead
 drops a plugin at ~/.config/opencode/plugin/shed.js. It runs
-'shed __bg-sync' at startup and injects the guide ('shed
+'shed __bg-sync' at startup, injects the guide ('shed
 __session-context --agent opencode', the raw body) into the model's
-system prompt. 'shed init --uninstall' deletes the file.
+system prompt, and forwards 'shed workspace new' tool calls to
+'shed __on-tool-call'. 'shed init --uninstall' deletes the file.
 `,
 
 	"auth": `auth — shed delegates to git

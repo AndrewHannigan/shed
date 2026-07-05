@@ -29,7 +29,7 @@ Every coding agent on your machine needs the same three things from git: fresh c
 # macOS (Homebrew)
 brew install AndrewHannigan/tap/shed
 
-# Linux / other Unix
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/AndrewHannigan/shed/main/install.sh | sh
 ```
 
@@ -228,7 +228,7 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 
 Shed does not manage credentials. Every git operation defers to whatever `git clone <url>` already works with in your shell — HTTPS credential helpers or `ssh-agent`. If `git clone <url>` works, shed works.
 
-**Picking a transport.** GitHub shorthand (`shed add owner/repo`) expands to HTTPS. If that can't authenticate but the SSH form can — the common "I only have an `ssh-agent` set up" case — `shed add` detects this during a preflight check and stores the working SSH URL instead, telling you it did. To force a transport, pass a full URL (`git@github.com:owner/repo.git` or `https://github.com/owner/repo`).
+**Picking a transport.** GitHub shorthand (`shed add owner/repo`) expands to HTTPS. If that can't authenticate but the SSH form can — the common "I only have an `ssh-agent` set up" case — `shed add` detects this during a preflight check and stores the working SSH URL instead, telling you it did. To start from a specific transport, pass a full URL (`git@github.com:owner/repo.git` or `https://github.com/owner/repo`) — the same preflight still applies, so if that URL can't authenticate and the other transport can, `add` stores the working one and tells you.
 
 **When auth fails.** Sync failures — including a repo's very first clone — are recorded and surfaced, never silently dropped: `shed status` reports them and the session-start hook warns your agent that the store is stale. The suggested fix is transport-aware (load your SSH key vs. `gh auth login` / a credential helper).
 
@@ -238,7 +238,7 @@ Shed does not manage credentials. Every git operation defers to whatever `git cl
 
 - `shed help` — curated overview of every command
 - `shed help <topic>` — long-form prose docs on a command or concept (topics: `agents`, `auth`, `concepts`, `history`, `init`, `library`, `locking`, `owner`, `path`, `prune`, `sync`, `workspace`)
-- `shed --help` and `shed <cmd> --help` — flag reference
+- `shed <cmd> --help` — flag reference (`shed --help` prints the same overview as `shed help`)
 
 ## License
 

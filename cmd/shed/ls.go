@@ -153,11 +153,11 @@ func runOwnerOnlyList(jsonOut bool) error {
 }
 
 // collectRepoList gathers the repo and owner rows behind `ls`, probing each
-// repo's checkout presence and its mirror's meta for the last-sync time. The probes are
-// deliberately cheap (a stat and a small metadata read, no size walk or git
-// subprocess) so this is safe to run on the session-context hot path, where the
-// repo count can be large (a tracked owner may pull in dozens). Workspace state
-// is gathered separately by collectWorkspaces.
+// repo's checkout presence and its mirror's meta for the last-sync time. The
+// probes are deliberately cheap (a stat and a small metadata read, no size
+// walk or git subprocess), so listing stays fast even when the repo count is
+// large (a tracked owner may pull in dozens). Workspace state is gathered
+// separately by collectWorkspaces.
 func collectRepoList(c *config.Config) ([]repoRow, []ownerRow, error) {
 	rows := make([]repoRow, 0, len(c.Repos))
 	for _, r := range c.Repos {

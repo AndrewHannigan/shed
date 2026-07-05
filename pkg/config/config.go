@@ -43,9 +43,10 @@ type Repo struct {
 	// user-added repos are never touched by owner reconciliation.
 	Source string `toml:"source,omitempty"`
 	// Git holds git config key/value pairs applied to this repo: reconciled
-	// into the cache's .git/config on every sync, and seeded into each new
-	// workspace at clone time. shed forwards them verbatim to git and never
-	// interprets the keys, so any git config option works without shed code.
+	// into the catalog checkout's worktree-scoped git config on every sync,
+	// and seeded into each new workspace at clone time. shed forwards them
+	// verbatim to git and never interprets the keys, so any git config
+	// option works without shed code.
 	// Set/update only — removing a key here does not unset it from a clone
 	// that already has it (re-add the repo to fully reset).
 	Git map[string]string `toml:"git,omitempty"`
