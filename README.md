@@ -139,7 +139,7 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 | `shed owner rm <name>…` | Drop one or more tracked owners (resolves against owners only) |
 | `shed sync [<name>…]` | Fetch each upstream's mirror once and refresh the read-only repos (usually automatic) |
 | `shed status` | Report sync health; show a repo's error and the likely fix |
-| `shed workspace new <repo> <branch>` | Create a writable clone off the just-synced repo (purely local); prints its path |
+| `shed workspace new <repo> <branch>` | Create a writable clone off the freshly-synced repo (purely local); prints its path |
 | `shed workspace ls` | List workspaces with dirty/unpushed state and age |
 | `shed workspace rm <name>…` | Delete one or more workspaces (refuses dirty/unpushed work without `--force`) |
 | `shed path <name>` | Print the absolute path of a repo or workspace by name (for `cd "$(shed path <name>)"`) |
