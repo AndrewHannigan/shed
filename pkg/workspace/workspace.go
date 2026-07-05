@@ -508,6 +508,20 @@ func parseReflogUnix(selector string) time.Time {
 	return time.Unix(ts, 0)
 }
 
+// CurrentBranch returns the short name of the branch checked out in the
+// workspace at path. A workspace starts on a branch named after its directory,
+// but nothing keeps them in step — work is routinely pushed from a branch
+// created or renamed inside the workspace — so callers that ask the forge
+// about "the workspace's branch" must use this, not the directory name. It
+// returns an error when HEAD is detached (or path isn't a git repo).
+func CurrentBranch(path string) (string, error) {
+	out, err := exec.Command("git", "-C", path, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve current branch of %s: %w", path, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // LandedInDefault reports whether the workspace's branch has already landed in
 // its remote default branch — that is, the branch tip (HEAD) is an ancestor of
 // refs/remotes/origin/HEAD, so every commit is already contained in the default

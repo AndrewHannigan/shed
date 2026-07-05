@@ -233,6 +233,35 @@ func TestLandedInDefault(t *testing.T) {
 	}
 }
 
+// CurrentBranch must report the branch checked out in the workspace — the name
+// prune asks GitHub about — which diverges from the workspace's directory name
+// as soon as a branch is created or renamed inside it. Detached HEAD is an
+// error so callers can fall back rather than query a bogus name.
+func TestCurrentBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ws := t.TempDir()
+	git(t, ws, nil, "init", "-q", "-b", "main", ".")
+	writeFile(t, ws, "a.txt", "1")
+	git(t, ws, nil, "add", "a.txt")
+	git(t, ws, nil, "commit", "-q", "-m", "first")
+
+	if got, err := CurrentBranch(ws); err != nil || got != "main" {
+		t.Fatalf("CurrentBranch = (%q, %v), want (main, nil)", got, err)
+	}
+
+	git(t, ws, nil, "checkout", "-q", "-b", "renamed-since-creation")
+	if got, err := CurrentBranch(ws); err != nil || got != "renamed-since-creation" {
+		t.Fatalf("CurrentBranch = (%q, %v), want (renamed-since-creation, nil)", got, err)
+	}
+
+	git(t, ws, nil, "checkout", "-q", "--detach")
+	if got, err := CurrentBranch(ws); err == nil {
+		t.Fatalf("CurrentBranch on detached HEAD = (%q, nil), want error", got)
+	}
+}
+
 func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
