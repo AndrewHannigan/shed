@@ -4,7 +4,7 @@
 
 **git repo management for terminal coding agents.**
 
-**shed** is a system all your agents share to locally manage git repos and workspaces — read-only reference repos, isolated writable workspaces, and improved session resumption.
+**shed** is a system for your agents to locally manage git repos and workspaces — read-only reference repos, isolated writable workspaces, and improved session resumption.
 
 <!-- TODO(visual hook): drop a demo GIF/asciinema here — two agents working the same
      repo through shed: each gets its own fresh `shed workspace new`, neither touches the
