@@ -451,6 +451,15 @@ func chmodTree(root string, writable bool) error {
 	gitPath := filepath.Join(root, ".git")
 	gitPathPrefix := gitPath + string(filepath.Separator)
 	chmod := func(p string, info os.FileInfo) error {
+		// os.Chmod follows symlinks, so chmodding one rewrites its TARGET —
+		// a file outside the tree if the link points there, or ENOENT if it
+		// dangles (repos legitimately commit dangling links, e.g. pytorch/xla's
+		// external → bazel-xla/external). A link's own perm bits gate nothing,
+		// so skip links entirely; in-tree targets get chmod'd when the walk
+		// reaches them directly.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 		mode := info.Mode().Perm()
 		if writable {
 			mode |= 0200
