@@ -24,8 +24,10 @@ func TestClaudeInstallAddsPreToolUseHook(t *testing.T) {
 
 	data, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	s := string(data)
-	// The `if` permission-rule natively gates the hook to workspace-new commands.
-	for _, want := range []string{"PreToolUse", "__on-tool-call --agent claude", `Bash(shed workspace new *)`, `"if"`} {
+	// The `if` permission-rules natively gate the hook to workspace-creating
+	// commands (new and from-pr).
+	for _, want := range []string{"PreToolUse", "__on-tool-call --agent claude",
+		`Bash(shed workspace new *)`, `Bash(shed workspace from-pr *)`, `"if"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("settings.json missing %q\n%s", want, s)
 		}

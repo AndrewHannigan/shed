@@ -66,9 +66,9 @@ func (c *Cursor) Install(opts InstallOptions) (Installed, error) {
 }
 
 // cursorOnToolCallMatcher gates the beforeShellExecution hook to shed
-// workspace-new commands. Cursor matches it (regex-style) against the command
-// string.
-const cursorOnToolCallMatcher = "shed (workspace|ws) new"
+// workspace-creating commands (new and from-pr). Cursor matches it
+// (regex-style) against the command string.
+const cursorOnToolCallMatcher = "shed (workspace|ws) (new|from-pr)"
 
 func (c *Cursor) Uninstall(prev Installed) error {
 	for _, hookCmd := range prev.AddedHooks {

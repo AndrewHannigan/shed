@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -16,11 +17,13 @@ import (
 // __on-tool-call is the pre-execution hook shed installs into each agent
 // (Claude PreToolUse, Cursor beforeShellExecution, opencode plugin
 // tool.execute.before). The agent hands it the session id, cwd, and the
-// command about to run — all in one event. When that command is a
-// `shed workspace new`, shed records a pending session→workspace intent keyed
-// by the (unique) workspace name, which `shed workspace new` then finalizes
-// into a link sidecar. This is how a workspace gets tied to its session
-// without the agent ever needing to know its own id.
+// command about to run — all in one event. When that command creates a
+// workspace (`shed workspace new` or `shed workspace from-pr`), shed records
+// a pending session→workspace intent keyed by the (unique) workspace name —
+// or by "pr-<number>" for a bare from-pr, whose eventual name isn't in the
+// command — which the creating command then finalizes into a link sidecar.
+// This is how a workspace gets tied to its session without the agent ever
+// needing to know its own id.
 //
 // It is best-effort and MUST NOT break the agent: it always exits 0 and emits
 // nothing on stdout (a silent PreToolUse hook is "allow"). Any parse failure
@@ -63,8 +66,8 @@ type hookInput struct {
 	SessionIDCamel string `json:"sessionID"`
 }
 
-// recordPendingFromHook reads the hook JSON, and if the command is a
-// `shed workspace new`, records a pending session→workspace intent.
+// recordPendingFromHook reads the hook JSON, and if the command creates a
+// workspace (new or from-pr), records a pending session→workspace intent.
 func recordPendingFromHook(stdin io.Reader, agentKey string) {
 	data, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if err != nil || len(data) == 0 {
@@ -78,7 +81,7 @@ func recordPendingFromHook(stdin io.Reader, agentKey string) {
 	if sessionID == "" || command == "" {
 		return
 	}
-	wsName, ok := parseWorkspaceNewName(command)
+	wsName, ok := parsePendingWorkspaceKey(command)
 	if !ok {
 		return
 	}
@@ -155,52 +158,89 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// parseWorkspaceNewName extracts the workspace name (the second positional
-// argument) from a `shed workspace new <repo> <name>` command. It tokenizes on
-// whitespace — tolerant of shell wrappers like `cd x && FOO=1 shed ws new a b`
-// — locates a `shed` token followed by `workspace`/`ws` then `new`, and returns
-// the second positional after `new` (skipping flags and the value of --base).
-// Returns ok=false when the command isn't a recognizable workspace-new.
-func parseWorkspaceNewName(command string) (string, bool) {
+// parsePendingWorkspaceKey extracts the key a pending session→workspace
+// intent should be recorded under from a workspace-creating shed command:
+//
+//	shed workspace new <repo> <name>          → <name>
+//	shed workspace from-pr <pr> --name <name> → <name>
+//	shed workspace from-pr <pr>               → "pr-<number>" (from the PR ref)
+//
+// It tokenizes on whitespace — tolerant of shell wrappers like
+// `cd x && FOO=1 shed ws new a b` — and locates a `shed` token followed by
+// `workspace`/`ws` then the verb. The bare from-pr form can't know the
+// workspace's eventual name (the PR's head branch, resolved later via gh), so
+// it records under the "pr-<number>" key that runWorkspaceFromPR also checks
+// when finalizing (see finalizeSessionLink's fallback keys). Returns ok=false
+// when the command isn't a recognizable workspace creation.
+func parsePendingWorkspaceKey(command string) (string, bool) {
 	toks := strings.Fields(command)
-	newIdx := -1
+	verb, verbIdx := "", -1
 	for i := 0; i+2 < len(toks); i++ {
-		if isShedToken(toks[i]) && (toks[i+1] == "workspace" || toks[i+1] == "ws") && toks[i+2] == "new" {
-			newIdx = i + 2
+		if isShedToken(toks[i]) && (toks[i+1] == "workspace" || toks[i+1] == "ws") &&
+			(toks[i+2] == "new" || toks[i+2] == "from-pr") {
+			verb, verbIdx = toks[i+2], i+2
 			break
 		}
 	}
-	if newIdx == -1 {
+	if verbIdx == -1 {
 		return "", false
 	}
 	var positionals []string
-	for i := newIdx + 1; i < len(toks); i++ {
+	var nameFlag string
+	for i := verbIdx + 1; i < len(toks); i++ {
 		t := toks[i]
 		if t == "--" {
 			continue
 		}
 		if strings.HasPrefix(t, "-") {
-			// --base takes a value; skip it too. Other flags here are boolean.
-			if t == "--base" {
+			// Flags that take a value: skip it (and capture --name's). Other
+			// flags here are boolean; --flag=value forms are one token anyway.
+			switch {
+			case t == "--base":
 				i++
+			case t == "--name":
+				if i+1 < len(toks) {
+					i++
+					nameFlag = toks[i]
+				}
+			case strings.HasPrefix(t, "--name="):
+				nameFlag = strings.TrimPrefix(t, "--name=")
 			}
 			continue
 		}
-		positionals = append(positionals, t)
+		// The PR ref is often quoted in the agent's shell command (URLs with
+		// `#`); Fields keeps the quotes, so strip them.
+		positionals = append(positionals, strings.Trim(t, `"'`))
 		if len(positionals) == 2 {
 			break
 		}
 	}
-	if len(positionals) < 2 {
-		return "", false
+	var key string
+	switch verb {
+	case "new":
+		if len(positionals) < 2 {
+			return "", false
+		}
+		key = positionals[1]
+	case "from-pr":
+		key = strings.Trim(nameFlag, `"'`)
+		if key == "" {
+			if len(positionals) < 1 {
+				return "", false
+			}
+			_, number, err := parsePRRef(positionals[0])
+			if err != nil {
+				return "", false
+			}
+			key = fmt.Sprintf("pr-%d", number)
+		}
 	}
-	name := positionals[1]
 	// Reject anything that wouldn't be a valid workspace name, so a malformed
 	// command never writes a bogus pending file.
-	if err := paths.ValidateBranch(name); err != nil {
+	if err := paths.ValidateBranch(key); err != nil {
 		return "", false
 	}
-	return name, true
+	return key, true
 }
 
 // isShedToken reports whether a token is the shed binary invocation: bare

@@ -208,6 +208,95 @@ func decodeMergedPR(data []byte) (int, error) {
 	return prs[0].Number, nil
 }
 
+// PR is the metadata `workspace from-pr` needs about a pull request: which
+// branch to check out, whether the head lives in a fork, and enough state to
+// warn about a PR that is no longer open.
+type PR struct {
+	Number      int
+	Title       string
+	State       string // "OPEN", "MERGED", or "CLOSED"
+	HeadRefName string // the PR's head branch (in the head repo)
+	CrossRepo   bool   // true when the head branch lives in a fork
+	HeadOwner   string // owner of the head repo ("" when unknown)
+	HeadName    string // name of the head repo ("" when unknown)
+}
+
+// ViewPR fetches the metadata for pull request number in repo (an
+// "owner/name" slug). host selects the GitHub host exactly as in MergedPR.
+// Like the other forge calls it returns ErrGhMissing / ErrGhUnauthed
+// (wrapped) when gh can't be used, so callers can degrade.
+func ViewPR(host, repo string, number int) (PR, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return PR{}, ErrGhMissing
+	}
+	cmd := exec.Command("gh", buildPRViewArgs(repo, number)...)
+	if host != "" && host != "github.com" {
+		cmd.Env = append(os.Environ(), "GH_HOST="+host)
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return PR{}, classifyExecErr("gh pr view", err, stderr.String())
+	}
+	return decodePR(out)
+}
+
+// buildPRViewArgs builds the `gh pr view` argument vector that fetches the
+// fields PR carries. Kept pure (no exec) so it can be unit-tested.
+func buildPRViewArgs(repo string, number int) []string {
+	// number is formatted from an int so it can never read as a flag; the
+	// "--repo=" form binds the slug to its flag (argument injection).
+	return []string{
+		"pr", "view", strconv.Itoa(number),
+		"--repo=" + repo,
+		"--json", "number,title,state,headRefName,isCrossRepository,headRepository,headRepositoryOwner",
+	}
+}
+
+// ghPR mirrors the JSON object `gh pr view --json ...` emits.
+type ghPR struct {
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	State       string `json:"state"`
+	HeadRefName string `json:"headRefName"`
+	CrossRepo   bool   `json:"isCrossRepository"`
+	HeadRepo    struct {
+		Name string `json:"name"`
+	} `json:"headRepository"`
+	HeadOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
+}
+
+// decodePR parses the JSON object gh emits for `pr view`. Pure for
+// testability.
+func decodePR(data []byte) (PR, error) {
+	var g ghPR
+	if err := json.Unmarshal(data, &g); err != nil {
+		return PR{}, fmt.Errorf("parse gh pr view output: %w", err)
+	}
+	return PR{
+		Number:      g.Number,
+		Title:       g.Title,
+		State:       g.State,
+		HeadRefName: g.HeadRefName,
+		CrossRepo:   g.CrossRepo,
+		HeadOwner:   g.HeadOwner.Login,
+		HeadName:    g.HeadRepo.Name,
+	}, nil
+}
+
+// ForkCloneURL builds a clone URL for the fork at host/owner/name, matching
+// baseURL's transport — the workspace could authenticate to the base repo
+// with that transport, so the fork gets the same one. Pure for testability.
+func ForkCloneURL(baseURL, host, owner, name string) string {
+	if isSSHURL(baseURL) {
+		return "git@" + host + ":" + owner + "/" + name + ".git"
+	}
+	return "https://" + host + "/" + owner + "/" + name
+}
+
 // buildListArgs builds the `gh repo list` argument vector for login under f.
 // Kept pure (no exec) so it can be unit-tested.
 func buildListArgs(login string, f Filter) []string {

@@ -56,6 +56,7 @@ var helpAliases = map[string]string{
 	"ls":        "library",
 	"repo":      "library",
 	"new":       "workspace",
+	"from-pr":   "workspace",
 	"uninstall": "init",
 	"purge":     "init",
 }
@@ -103,7 +104,7 @@ Commands:
   rm            remove tracked repos or owners
   status        report sync health; show a repo's error and the likely fix
   sync          fetch each upstream once, refresh the read-only repos (usually automatic)
-  workspace     {new,ls,rm} of writable workspaces
+  workspace     {new,from-pr,ls,rm} of writable workspaces
 
 Topics: agents, auth, concepts, history, init, library, locking, owner, path, prune, sync, workspace
 `,
@@ -405,6 +406,19 @@ upstream. Edits happen here.
     printed on stdout so command substitution works. Make changes there,
     then commit and push.
 
+  shed workspace from-pr <pr> [--name <name>]
+    Create a workspace holding an existing pull request's branch, for
+    reviewing it or pushing fixes to it. <pr> is a PR URL
+    (https://github.com/OWNER/REPO/pull/123) or a #-reference
+    (OWNER/REPO#123, REPO#123); the repo must already be in the library.
+    The workspace is named after the PR's head branch (--name overrides).
+    With gh installed and authenticated, a same-repo PR checks its branch
+    out tracking origin — 'git push' updates the PR — and a fork PR gets a
+    second remote named "fork" pointing at the contributor's fork, tracked
+    when reachable. Without gh, the workspace is named pr-<number> and
+    holds the PR head (refs/pull/<n>/head, fetched from origin), with
+    nothing wired for pushing back. Prints the path like 'new' does.
+
   shed workspace ls [--json]
     Every workspace with repo, branch, dirty state, unpushed-commit count,
     and last activity (its newest reflog entry — creation, commit, or
@@ -468,7 +482,7 @@ need gh), and --dry-run previews its removals too.
 
 What's recorded
   Only "working" commands that change the library or workspaces are logged:
-  add, rm, prune, init, and workspace new/rm. Read-only queries (ls,
+  add, rm, prune, init, and workspace new/from-pr/rm. Read-only queries (ls,
   status, workspace ls/path), background syncs, and the plain 'sync' command
   are not recorded, and only commands that succeed are. Each entry is the
   command exactly as you typed it, with a timestamp.

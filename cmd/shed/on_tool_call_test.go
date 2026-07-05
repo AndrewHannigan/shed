@@ -10,7 +10,7 @@ import (
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
-func TestParseWorkspaceNewName(t *testing.T) {
+func TestParsePendingWorkspaceKey(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -29,12 +29,22 @@ func TestParseWorkspaceNewName(t *testing.T) {
 		{"only one positional", "shed workspace new foo", "", false},
 		{"unrelated mentioning phrase", `echo "workspace new stuff"`, "", false},
 		{"option-looking name rejected", "shed workspace new foo -evil", "", false},
+
+		// from-pr: keyed by --name when given, else pr-<number> from the ref.
+		{"from-pr URL", "shed workspace from-pr https://github.com/o/r/pull/42", "pr-42", true},
+		{"from-pr quoted URL", `shed workspace from-pr "https://github.com/o/r/pull/42#top"`, "pr-42", true},
+		{"from-pr hash ref", "shed ws from-pr r#7", "pr-7", true},
+		{"from-pr with --name", "shed workspace from-pr r#7 --name my-review", "my-review", true},
+		{"from-pr with --name= form", "shed ws from-pr r#7 --name=my-review", "my-review", true},
+		{"from-pr shell wrapped", "cd /x && shed ws from-pr o/r#9", "pr-9", true},
+		{"from-pr without a ref", "shed workspace from-pr", "", false},
+		{"from-pr unparseable ref", "shed workspace from-pr not-a-pr", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := parseWorkspaceNewName(tt.in)
+			got, ok := parsePendingWorkspaceKey(tt.in)
 			if got != tt.want || ok != tt.ok {
-				t.Errorf("parseWorkspaceNewName(%q) = (%q, %v), want (%q, %v)", tt.in, got, ok, tt.want, tt.ok)
+				t.Errorf("parsePendingWorkspaceKey(%q) = (%q, %v), want (%q, %v)", tt.in, got, ok, tt.want, tt.ok)
 			}
 		})
 	}

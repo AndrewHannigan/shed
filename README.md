@@ -24,6 +24,7 @@ Agent: reads ~/.shed/repos/github.com/octocat/Hello-World   (read-only, always c
 - ⚡ **Workspaces in seconds, even offline** — `shed workspace new` is a purely local clone (objects hardlink from a shared per-upstream mirror), with the network never on the critical path. The result is a completely ordinary git repo, `origin` pointing at the real upstream — push as if you'd cloned it from there.
 - 🛡 **A baseline that can't be broken** — repo checkouts are read-only and self-repairing; agents grep and read across the whole catalog, and nothing they do (and nothing shed does in the background) can corrupt the reference copies or lose workspace work.
 - 🔁 **Pick up where you left off** — `shed resume <workspace>` reopens the exact agent session that created a workspace — same agent, same session id, same directory — so a half-finished task is one command away.
+- 🔀 **Start from a PR, not just a branch** — `shed workspace from-pr <url>` carves a workspace holding an existing pull request's branch — same-repo or fork — wired so `git push` updates the PR. "Fix the CI failure on PR #123" starts one command later.
 - 🗂 **Multiple versions, one repo** — track a branch or tag with `shed add <repo> --track <ref>`; `cpython`, `cpython@3.12`, and `cpython@v3.12.3` sit side by side, sharing one mirror so extra versions cost a checkout, not another copy of history.
 - 🧹 **Cleanup and upkeep in one command** — `shed prune` reclaims workspaces whose work already landed (merged PR or merged into the default branch), never touches unpushed work, and does all git maintenance behind the scenes — you never run `gc`.
 - ⚙️ **Zero agent setup** — one `shed init` wires up each agent to use shed automatically.
@@ -140,6 +141,7 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 | `shed sync [<name>…]` | Fetch each upstream's mirror once and refresh the read-only repos (usually automatic) |
 | `shed status` | Report sync health; show a repo's error and the likely fix |
 | `shed workspace new <repo> <branch>` | Create a writable clone off the freshly-synced repo (purely local); prints its path |
+| `shed workspace from-pr <pr>` | Create a workspace holding an existing PR's branch (URL or `repo#123`) — review it or push fixes to it |
 | `shed workspace ls` | List workspaces with dirty/unpushed state and age |
 | `shed workspace rm <name>…` | Delete one or more workspaces (refuses dirty/unpushed work without `--force`) |
 | `shed path <name>` | Print the absolute path of a repo or workspace by name (for `cd "$(shed path <name>)"`) |

@@ -14,6 +14,11 @@ You have a local library of git repos managed by `shed`.
   and prints its path. It syncs the repo first so workspaces are always up to date
   when created (offline it forks from the last synced state). The workspace is an
   ordinary clone whose origin is the real upstream — commit and push as normal.
+- **Work on an existing pull request**: `shed workspace from-pr <pr-url>` (also
+  `<owner>/<repo>#<number>`) creates a workspace holding that PR's branch and prints
+  its path — use it to review a PR or push fixes to it instead of recreating the
+  branch by hand. Same-repo PRs track origin so `git push` updates the PR; fork PRs
+  get a `fork` remote wired for pushing back.
 - **Prefer shed repos and workspaces this over any other checkout of the repo you happen to find on disk.** Library
   repos are kept up to date automatically, so a fresh workspace is guaranteed current; a
   stray clone sitting elsewhere on disk — a sibling, or a child of your working directory —

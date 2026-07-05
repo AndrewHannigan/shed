@@ -58,14 +58,16 @@ func claudeHookEntry(command string) map[string]any {
 // its session. The matcher ("Bash") only filters on tool name, so each inner
 // hook adds an `if` permission-rule that filters on the command *content* —
 // Claude evaluates these natively and never runs the hook (or spawns shed) on a
-// non-matching call. One `if` per accepted invocation form (`workspace new` and
-// the `ws` alias).
+// non-matching call. One `if` per accepted invocation form (`workspace new`,
+// `workspace from-pr`, and their `ws` aliases).
 func claudeOnToolCallEntry(command string) map[string]any {
 	return map[string]any{
 		"matcher": "Bash",
 		"hooks": []any{
 			map[string]any{"type": "command", "if": "Bash(shed workspace new *)", "command": command},
 			map[string]any{"type": "command", "if": "Bash(shed ws new *)", "command": command},
+			map[string]any{"type": "command", "if": "Bash(shed workspace from-pr *)", "command": command},
+			map[string]any{"type": "command", "if": "Bash(shed ws from-pr *)", "command": command},
 		},
 	}
 }

@@ -224,3 +224,102 @@ func TestDecodeMergedPR(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildPRViewArgs(t *testing.T) {
+	got := buildPRViewArgs("acme/widget", 123)
+	want := []string{"pr", "view", "123",
+		"--repo=acme/widget",
+		"--json", "number,title,state,headRefName,isCrossRepository,headRepository,headRepositoryOwner"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildPRViewArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestDecodePR(t *testing.T) {
+	t.Run("same-repo PR", func(t *testing.T) {
+		data := []byte(`{
+			"number": 42,
+			"title": "Fix the flux capacitor",
+			"state": "OPEN",
+			"headRefName": "fix-flux",
+			"isCrossRepository": false,
+			"headRepository": {"name": "widget"},
+			"headRepositoryOwner": {"login": "acme"}
+		}`)
+		got, err := decodePR(data)
+		if err != nil {
+			t.Fatalf("decodePR: %v", err)
+		}
+		want := PR{Number: 42, Title: "Fix the flux capacitor", State: "OPEN",
+			HeadRefName: "fix-flux", CrossRepo: false, HeadOwner: "acme", HeadName: "widget"}
+		if got != want {
+			t.Fatalf("decodePR = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("cross-repo PR from a fork", func(t *testing.T) {
+		data := []byte(`{
+			"number": 7,
+			"title": "typo",
+			"state": "MERGED",
+			"headRefName": "patch-1",
+			"isCrossRepository": true,
+			"headRepository": {"name": "widget"},
+			"headRepositoryOwner": {"login": "contributor"}
+		}`)
+		got, err := decodePR(data)
+		if err != nil {
+			t.Fatalf("decodePR: %v", err)
+		}
+		if !got.CrossRepo || got.HeadOwner != "contributor" || got.State != "MERGED" {
+			t.Fatalf("decodePR = %+v, want cross-repo from contributor, MERGED", got)
+		}
+	})
+
+	// gh emits null for headRepository/headRepositoryOwner when the fork was
+	// deleted; decoding must not fail, just leave the head fields empty.
+	t.Run("deleted fork yields empty head fields", func(t *testing.T) {
+		data := []byte(`{
+			"number": 9,
+			"title": "orphan",
+			"state": "OPEN",
+			"headRefName": "gone",
+			"isCrossRepository": true,
+			"headRepository": null,
+			"headRepositoryOwner": null
+		}`)
+		got, err := decodePR(data)
+		if err != nil {
+			t.Fatalf("decodePR: %v", err)
+		}
+		if got.HeadOwner != "" || got.HeadName != "" {
+			t.Fatalf("decodePR = %+v, want empty head owner/name", got)
+		}
+	})
+
+	t.Run("malformed JSON is an error", func(t *testing.T) {
+		if _, err := decodePR([]byte("not json")); err == nil {
+			t.Fatal("decodePR should fail on malformed input")
+		}
+	})
+}
+
+func TestForkCloneURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"https base gives https fork", "https://github.com/acme/widget", "https://github.com/contrib/widget"},
+		{"scp-style ssh base gives ssh fork", "git@github.com:acme/widget.git", "git@github.com:contrib/widget.git"},
+		{"ssh scheme base gives ssh fork", "ssh://git@github.com/acme/widget.git", "git@github.com:contrib/widget.git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ForkCloneURL(tt.baseURL, "github.com", "contrib", "widget")
+			if got != tt.want {
+				t.Fatalf("ForkCloneURL(%q) = %q, want %q", tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}

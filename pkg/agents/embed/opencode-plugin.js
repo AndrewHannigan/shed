@@ -34,9 +34,9 @@ export const ShedPlugin = async ({ $, directory }) => {
       if (guide) output.system.push(guide)
     },
 
-    // Pre-tool hook: when the model runs `shed workspace new` via the bash
-    // tool, hand shed the session id + command + cwd so it can link the new
-    // workspace to this session (for `shed resume`). The id is on the first
+    // Pre-tool hook: when the model runs `shed workspace new` (or from-pr)
+    // via the bash tool, hand shed the session id + command + cwd so it can
+    // link the new workspace to this session (for `shed resume`). The id is on the first
     // arg, the command on the second (output.args.command). We pre-filter here
     // — only a workspace-new command shells out to shed — so shed is never
     // invoked on ordinary tool calls. Best-effort and non-blocking: errors are
@@ -46,7 +46,8 @@ export const ShedPlugin = async ({ $, directory }) => {
         if (input.tool !== "bash") return
         const command = output && output.args && output.args.command
         if (!command) return
-        if (command.indexOf("workspace new") === -1 && command.indexOf("ws new") === -1) return
+        if (command.indexOf("workspace new") === -1 && command.indexOf("ws new") === -1 &&
+            command.indexOf("workspace from-pr") === -1 && command.indexOf("ws from-pr") === -1) return
         const payload = JSON.stringify({
           sessionID: input.sessionID,
           command,

@@ -27,8 +27,9 @@ var recordedCommands = map[string]bool{
 	"owner rm":      true,
 	"prune":         true,
 	"init":          true,
-	"workspace new": true,
-	"workspace rm":  true,
+	"workspace new":     true,
+	"workspace from-pr": true,
+	"workspace rm":      true,
 }
 
 // shouldRecord reports whether a command's successful run should be logged.
@@ -53,7 +54,7 @@ func newHistoryCmd() *cobra.Command {
 		Use:   "history",
 		Short: "Show recent shed commands",
 		Long: `history prints the most recent shed commands that changed the
-library or workspaces (add, rm, prune, init, workspace new/rm), newest
+library or workspaces (add, rm, prune, init, workspace new/from-pr/rm), newest
 last. Read-only queries and background syncs are not recorded.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

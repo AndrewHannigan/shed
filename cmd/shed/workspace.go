@@ -28,6 +28,7 @@ func newWorkspaceCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		newWorkspaceNewCmd(),
+		newWorkspaceFromPRCmd(),
 		newWorkspaceLsCmd(),
 		newWorkspaceRmCmd(),
 	)
@@ -95,6 +96,50 @@ func runWorkspaceNew(name, branch, base string) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
+	if err := guardNewWorkspace(c, name, branch); err != nil {
+		return err
+	}
+	if err := syncForWorkspace(name, repo); err != nil {
+		return err
+	}
+	src, err := workspaceSource(repo, name)
+	if err != nil {
+		return errs.Wrap(errs.Config, err)
+	}
+	fmt.Fprintf(os.Stderr, "Creating workspace: %s\n", workspace.PathFor(name, branch))
+	path, warnings, err := workspace.New(src, branch, base)
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
+	if err != nil {
+		if errors.Is(err, mirror.ErrLocked) {
+			return errs.Wrap(errs.Locked, err)
+		}
+		return errs.Wrap(errs.Network, err)
+	}
+	// Best-effort: link this workspace to the agent session that created it, so
+	// `shed resume <name>` can reopen it. The session comes from the
+	// SHED_SESSION_* env override (headless) or the pending intent the pre-exec
+	// hook recorded. A failure here never fails the create — resume is just
+	// unavailable for an unlinked workspace.
+	finalizeSessionLink(name, branch)
+	// The bare path on stdout is the machine-readable contract — it is what
+	// makes `cd "$(shed ws new …)"` and agent capture work. Interactive
+	// terminals already saw the "Creating workspace:" line, so the bare
+	// path is emitted only when stdout is being piped or captured.
+	if !isTerminal(os.Stdout) {
+		fmt.Println(path)
+	}
+	return nil
+}
+
+// guardNewWorkspace runs the pre-creation checks shared by `workspace new`
+// and `workspace from-pr`: the branch must not name an existing workspace
+// (half-created leftovers are repaired later, inside workspace.New), must not
+// nest inside another workspace's tree, and must be unique across every repo
+// and against repo names — so `shed resume <name>` and `shed path <name>`
+// stay unambiguous. Runs before the network sync so a doomed name fails fast.
+func guardNewWorkspace(c *config.Config, name, branch string) error {
 	// A half-created leftover (crash between clone and `remote set-url`) is
 	// repaired by replacement inside workspace.New; only a real workspace is
 	// an "already exists" error.
@@ -123,12 +168,16 @@ func runWorkspaceNew(name, branch, base string) error {
 			"workspace name %q collides with repo %s; pick a distinct name so `shed path %s` is unambiguous",
 			branch, repos[0], branch)
 	}
-	// ALWAYS attempt a sync first (mirror fetch + catalog fast-forward) so the
-	// workspace forks from the freshest code. If that fails but a synced repo
-	// already exists, warn and fall back to the last synced state — graceful
-	// degradation, so `new` still works offline; only hard-fail when there is
-	// nothing on disk to fork from.
-	//
+	return nil
+}
+
+// syncForWorkspace is the pre-creation sync every workspace-creating command
+// runs: ALWAYS attempt a sync first (mirror fetch + catalog fast-forward) so
+// the workspace forks from the freshest code. If that fails but a synced repo
+// already exists, warn and fall back to the last synced state — graceful
+// degradation, so creation still works offline; only hard-fail when there is
+// nothing on disk to fork from.
+func syncForWorkspace(name string, repo *config.Repo) error {
 	// A single repo refresh, so streaming git's progress meter can't
 	// interleave; show it when interactive (nil when output is piped — see
 	// isTerminal). Both modes end with one "syncing <repo>...DONE" (or
@@ -161,34 +210,6 @@ func runWorkspaceNew(name, branch, base string) error {
 			return errs.New(errs.Network, "could not sync %s: %s", name, res.Error)
 		}
 		fmt.Fprintf(os.Stderr, "warning: could not refresh %s (%s); using the last synced state\n", name, res.Error)
-	}
-	src, err := workspaceSource(repo, name)
-	if err != nil {
-		return errs.Wrap(errs.Config, err)
-	}
-	fmt.Fprintf(os.Stderr, "Creating workspace: %s\n", workspace.PathFor(name, branch))
-	path, warnings, err := workspace.New(src, branch, base)
-	for _, w := range warnings {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
-	}
-	if err != nil {
-		if errors.Is(err, mirror.ErrLocked) {
-			return errs.Wrap(errs.Locked, err)
-		}
-		return errs.Wrap(errs.Network, err)
-	}
-	// Best-effort: link this workspace to the agent session that created it, so
-	// `shed resume <name>` can reopen it. The session comes from the
-	// SHED_SESSION_* env override (headless) or the pending intent the pre-exec
-	// hook recorded. A failure here never fails the create — resume is just
-	// unavailable for an unlinked workspace.
-	finalizeSessionLink(name, branch)
-	// The bare path on stdout is the machine-readable contract — it is what
-	// makes `cd "$(shed ws new …)"` and agent capture work. Interactive
-	// terminals already saw the "Creating workspace:" line, so the bare
-	// path is emitted only when stdout is being piped or captured.
-	if !isTerminal(os.Stdout) {
-		fmt.Println(path)
 	}
 	return nil
 }
@@ -229,17 +250,25 @@ func repoNames(c *config.Config) []string {
 
 // finalizeSessionLink writes the session-link sidecar for a just-created
 // workspace, sourcing the session from (in order) the SHED_SESSION_* env
-// override or the pending intent recorded by the pre-exec hook for this
-// workspace name. It clears the pending intent in passing. Best-effort: any
-// problem (no session info, write error) leaves the workspace unlinked.
-func finalizeSessionLink(repo, wsName string) {
+// override or the pending intent recorded by the pre-exec hook — checked
+// under the workspace name first, then any fallbackKeys. The fallbacks exist
+// for `workspace from-pr`: its pre-exec hook can't know the eventual
+// workspace name (the PR's head branch, resolved later), so it records the
+// intent under "pr-<number>" instead. Consumed pending intents are cleared in
+// passing. Best-effort: any problem (no session info, write error) leaves the
+// workspace unlinked.
+func finalizeSessionLink(repo, wsName string, fallbackKeys ...string) {
 	link, ok := sessionFromEnv()
 	if !ok {
-		p, err := workspace.TakePending(wsName)
-		if err != nil || p == nil {
+		for _, key := range append([]string{wsName}, fallbackKeys...) {
+			if p, err := workspace.TakePending(key); err == nil && p != nil {
+				link = *p
+				break
+			}
+		}
+		if link.SessionID == "" {
 			return
 		}
-		link = *p
 	}
 	if link.CWD == "" {
 		if cwd, err := os.Getwd(); err == nil {
