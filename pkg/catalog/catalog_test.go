@@ -33,12 +33,30 @@ func requireGit(t *testing.T) {
 
 const key = "github.com/acme/widget"
 
+// tempHome points HOME at a fresh temp dir and registers a cleanup that
+// restores the owner write bit on every directory beneath it, so t.TempDir
+// removal can delete the read-only trees Ensure leaves behind (chmod a-w,
+// see LockTree — unlinking an entry needs write on its parent directory).
+func tempHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Cleanup(func() {
+		filepath.Walk(home, func(p string, info os.FileInfo, err error) error {
+			if err == nil && info.IsDir() && info.Mode().Perm()&0200 == 0 {
+				os.Chmod(p, info.Mode().Perm()|0200)
+			}
+			return nil
+		})
+	})
+}
+
 // setup creates an upstream (main + branch "rel" + tag "v1") and its mirror,
 // returning the upstream path.
 func setup(t *testing.T) string {
 	t.Helper()
 	requireGit(t)
-	t.Setenv("HOME", t.TempDir())
+	tempHome(t)
 	root := t.TempDir()
 	up := filepath.Join(root, "upstream")
 	git(t, root, "init", "-q", "-b", "main", up)
@@ -358,7 +376,7 @@ func TestEnsureAppliesWorktreeConfig(t *testing.T) {
 // An upstream with no commits is the "empty" state, not an error.
 func TestResolveTrackEmptyUpstream(t *testing.T) {
 	requireGit(t)
-	t.Setenv("HOME", t.TempDir())
+	tempHome(t)
 	root := t.TempDir()
 	up := filepath.Join(root, "upstream")
 	git(t, root, "init", "-q", "-b", "main", up)
@@ -396,10 +414,6 @@ func TestLockTreeCoversWholeTree(t *testing.T) {
 	}
 	if fi.Mode().Perm()&0222 != 0 {
 		t.Errorf("file sorted after .git should be locked, mode %v", fi.Mode())
-	}
-	// Cleanup so t.TempDir removal works.
-	if err := UnlockTree(name); err != nil {
-		t.Fatal(err)
 	}
 }
 

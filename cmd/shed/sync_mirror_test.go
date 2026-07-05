@@ -26,6 +26,24 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// tempHome points HOME at a fresh temp dir and registers a cleanup that
+// restores the owner write bit on every directory beneath it, so t.TempDir
+// removal can delete the read-only trees sync leaves behind (chmod a-w, see
+// catalog.LockTree — unlinking an entry needs write on its parent directory).
+func tempHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Cleanup(func() {
+		filepath.Walk(home, func(p string, info os.FileInfo, err error) error {
+			if err == nil && info.IsDir() && info.Mode().Perm()&0200 == 0 {
+				os.Chmod(p, info.Mode().Perm()|0200)
+			}
+			return nil
+		})
+	})
+}
+
 // TestSyncMirrorJobEndToEnd drives one upstream tracked three ways — default
 // branch, a release branch, and a tag — through syncMirrorJob twice: the
 // first pass creates the mirror once and materializes all three catalogs; the
@@ -35,7 +53,7 @@ func TestSyncMirrorJobEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	t.Setenv("HOME", t.TempDir())
+	tempHome(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	root := t.TempDir()
@@ -128,7 +146,7 @@ func TestSyncMirrorJobTrackDeletedUpstream(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	t.Setenv("HOME", t.TempDir())
+	tempHome(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	root := t.TempDir()
@@ -179,7 +197,7 @@ func TestSyncMirrorJobEmptyUpstream(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	t.Setenv("HOME", t.TempDir())
+	tempHome(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	root := t.TempDir()
@@ -217,7 +235,7 @@ func TestSyncMirrorJobEmptyUpstream(t *testing.T) {
 // touching the disk: joining a raw URL under MirrorsDir could escape it
 // (mirror keys must be validated exactly like repo names).
 func TestSyncMirrorJobRejectsUnsafeURL(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	tempHome(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	for _, url := range []string{
@@ -251,7 +269,7 @@ func TestSyncMirrorJobOfflineMaterializesFromMirror(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	t.Setenv("HOME", t.TempDir())
+	tempHome(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	root := t.TempDir()
