@@ -109,6 +109,17 @@ func New(src Source, name, base string) (path string, warnings []string, err err
 		return "", nil, fmt.Errorf("repo not present; run `shed sync %s` first", src.Repo)
 	}
 	wsPath := PathFor(src.Repo, name)
+	// Refuse to create a workspace whose path lands inside another workspace's
+	// working tree — the case where two branch names are path prefixes of each
+	// other (e.g. "feature/foo" and "feature/foo/bar"). Without this guard the
+	// nested clone is invisible to List (its walk stops at the first .git), so
+	// prune/rm/ls never see it, and removing the enclosing workspace silently
+	// rm -rf's the nested one along with any unpushed work it holds.
+	if encl, ok := enclosingWorkspace(wsPath); ok {
+		return "", nil, fmt.Errorf(
+			"workspace %q would be created inside existing workspace %q; pick a name that is not nested under another workspace",
+			name, encl)
+	}
 	if err := clearHalfCreated(wsPath); err != nil {
 		return "", nil, err
 	}
@@ -285,6 +296,39 @@ func cloneArgs(catalogPath, branch, dest string, gitConfig map[string]string) []
 		args = append(args, "--config", k+"="+gitConfig[k])
 	}
 	return append(args, "--", catalogPath, dest)
+}
+
+// EnclosingWorkspace reports whether a workspace at (name, branch) would land
+// inside an existing workspace's working tree, returning the enclosing
+// workspace's repo-relative slash path and true when so. It lets the command
+// layer fail fast (before the network sync) with the same guard workspace.New
+// enforces authoritatively.
+func EnclosingWorkspace(name, branch string) (string, bool) {
+	return enclosingWorkspace(PathFor(name, branch))
+}
+
+// enclosingWorkspace reports whether wsPath lies inside an existing
+// workspace's working tree — i.e. some ancestor directory (below
+// WorkspacesDir) is itself a workspace root (contains a .git directory). It
+// returns that ancestor's repo-relative slash path and true when so. Walking
+// only ancestors is sufficient: the reverse nesting (an ancestor path being
+// claimed while a descendant workspace already exists) is already refused by
+// the Mkdir/clearHalfCreated arbitration, since the descendant occupies the
+// path. The repo-name segments above the branch never contain a .git, so the
+// walk naturally stops being meaningful there.
+func enclosingWorkspace(wsPath string) (string, bool) {
+	root := paths.WorkspacesDir()
+	sep := string(filepath.Separator)
+	for dir := filepath.Dir(wsPath); strings.HasPrefix(dir, root+sep); dir = filepath.Dir(dir) {
+		if s, err := os.Stat(filepath.Join(dir, ".git")); err == nil && s.IsDir() {
+			rel, err := filepath.Rel(root, dir)
+			if err != nil {
+				return "", false
+			}
+			return filepath.ToSlash(rel), true
+		}
+	}
+	return "", false
 }
 
 // clearHalfCreated inspects an already-existing workspace path. A directory

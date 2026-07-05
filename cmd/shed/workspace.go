@@ -101,6 +101,15 @@ func runWorkspaceNew(name, branch, base string) error {
 	if workspace.Exists(name, branch) && !workspace.HalfCreated(name, branch) {
 		return errs.New(errs.Exists, "workspace already exists at %s", workspace.PathFor(name, branch))
 	}
+	// A branch that is a path prefix of (or nested under) an existing
+	// workspace's branch would clone inside that workspace's working tree,
+	// where List can't see it and removing the enclosing workspace would delete
+	// it. Refuse before the network sync; workspace.New re-checks authoritatively.
+	if encl, ok := workspace.EnclosingWorkspace(name, branch); ok {
+		return errs.New(errs.Exists,
+			"workspace %q would be created inside existing workspace %s; pick a name that is not nested under another workspace",
+			branch, encl)
+	}
 	// Workspace names are unique across the entire shed, so `shed resume <name>`
 	// is unambiguous. Reject a name already taken under a *different* repo.
 	if other, _, found := workspace.LocateByName(repoNames(c), branch); found && other != name {
