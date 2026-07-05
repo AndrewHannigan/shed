@@ -19,9 +19,9 @@ Agent: reads ~/.shed/repos/github.com/octocat/Hello-World   (read-only, always f
        → edits there, opens a PR                            (repo + other agents untouched)
 ```
 
-- 🤝 **One system, every agent** — Claude Code, Cursor, and opencode all manage repos and workspaces the same way, so parallel sessions never step on each other in the same repo.
+- 🤝 **One system, every agent** — Claude Code, Cursor CLI, and opencode all manage repos and workspaces the same way, so parallel sessions never step on each other in the same repo.
 - 🌱 **Never a stale branch** — repos refresh in the background at session start and again right before every workspace is created, so an agent never unintentionally branches off out-of-date code.
-- ⚡ **Workspaces in seconds, even offline** — `shed workspace new` is a purely local clone (objects hardlink from a shared per-upstream mirror), with the network never on the critical path. The result is a completely ordinary git repo — branch, commit, and push to GitHub like any clone.
+- ⚡ **Workspaces in seconds, even offline** — `shed workspace new` is a purely local clone (objects hardlink from a shared per-upstream mirror), with the network never on the critical path. The result is a completely ordinary git repo, `origin` pointing at the real upstream — push as if you'd cloned it from there.
 - 🛡 **A baseline that can't be broken** — repo checkouts are read-only and self-repairing; agents grep and read across the whole catalog, and nothing they do (and nothing shed does in the background) can corrupt the reference copies or lose workspace work.
 - 🔁 **Pick up where you left off** — `shed resume <workspace>` reopens the exact agent session that created a workspace — same agent, same session id, same directory — so a half-finished task is one command away.
 - 🗂 **Multiple versions, one repo** — track a branch or tag with `shed add <repo> --track <ref>`; `cpython`, `cpython@3.12`, and `cpython@v3.12.3` sit side by side, sharing one mirror so extra versions cost a checkout, not another copy of history.
@@ -42,7 +42,7 @@ brew install AndrewHannigan/tap/shed
 curl -fsSL https://raw.githubusercontent.com/AndrewHannigan/shed/main/install.sh | sh
 ```
 
-The script installs a release binary and verifies its checksum against the GitHub release — read it first if you like, or grab a binary yourself from [Releases](https://github.com/AndrewHannigan/shed/releases). Linux and macOS; on Windows, use WSL.
+The script installs a release binary and verifies its checksum against the GitHub release; binaries are also on [Releases](https://github.com/AndrewHannigan/shed/releases) if you'd rather skip `curl | sh`. Linux and macOS; on Windows, use WSL.
 
 ---
 
