@@ -112,11 +112,12 @@ Why this shape:
 
 ## Why plain clones for workspaces, not `git worktree`
 
-Repos *are* worktrees (of the mirror — that's what makes N versions cheap and keeps them dependency-tracked through gc). Workspaces are deliberately not:
+Repos *are* worktrees (of the mirror — that's what makes N versions cheap and keeps them dependency-tracked through gc). Workspaces are deliberately not.
+
+A workspace exists to hand the agent a repo it owns outright, free to drive however the task demands — no workflow imposed on top. Worktrees impose one: a shared `refs/heads/*`, each branch checked out in at most one tree — a model built for a human working one branch per tree. Agents go off that script constantly. One that decides mid-task to cut two branches and flip between them to compare an experiment is suddenly negotiating with the sharing rules: every name it mints lands in the shared namespace, and any branch a sibling tree holds is off-limits. In a clone, none of that is even a question:
 
 - **Each workspace is just an ordinary repo, with no shared namespace to coordinate.** Worktrees pool one `refs/heads/*` (and the branch reflogs under it), and by default one `.git/config`, across every tree — so git has to police the sharing: you can't check out or delete a branch another worktree holds. A clone owns its refs, branch reflogs, config, index, `HEAD`, and an `origin` pointing at the real upstream. An agent can branch, delete, retarget `origin`, change `user.email`, or rewrite history, and none of it touches another workspace or needs any special setup.
 - **Teardown is a plain `rm -rf`** — all `shed prune` and `workspace rm` do. The worktree equivalent is `git worktree remove`, with registration bookkeeping to keep straight.
-- **A plain clone leaves room — for the agent and for shed.** Because a workspace is an ordinary git repo with no worktree rules bolted on, an agent can drive it however a task demands, and pushing to the real upstream needs no ceremony.
 
 Those arguments are exactly why the *user-facing writable* tier is clones — and none of them apply to the read-only repos, which never push, never branch, and are maintained by one owner (shed). That's why repos get worktrees and workspaces get clones.
 
