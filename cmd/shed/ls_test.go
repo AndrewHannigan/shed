@@ -33,7 +33,7 @@ func TestWriteLibraryCaptionedSections(t *testing.T) {
 
 	for _, want := range []string{
 		"Tracked Owners", "OWNER", "octocat",
-		"Repos", "NAME", "LAST SYNC", "github.com/octocat/Hello-World",
+		"Repos", "NAME", "TRACK", "SYNCED", "github.com/octocat/Hello-World",
 		"Workspaces", "fix-typo", "DIRTY", "UNPUSHED",
 	} {
 		if !strings.Contains(out, want) {

@@ -10,23 +10,36 @@ import (
 	"github.com/AndrewHannigan/shed/pkg/forge"
 )
 
-// TestFinishFetchClassifiesGone verifies a vanished-remote fetch error becomes
-// the distinct "gone" status while any other fetch error stays "error", so the
-// summary and exit code can treat a deleted repo differently from a real fault.
-func TestFinishFetchClassifiesGone(t *testing.T) {
+// TestFailAllFetchClassifiesGone verifies a vanished-remote fetch error
+// becomes the distinct "gone" status for every repo of the mirror, while any
+// other fetch error stays "error", so the summary and exit code can treat a
+// deleted repo differently from a real fault.
+func TestFailAllFetchClassifiesGone(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	gone := finishFetch(syncResult{Name: "github.com/acme/deleted"}, time.Now(),
+	job := mirrorJob{key: "github.com/acme/deleted", url: "https://github.com/acme/deleted",
+		repos: []syncTarget{
+			{name: "github.com/acme/deleted"},
+			{name: "github.com/acme/deleted@v2"},
+		}}
+	gone := failAllFetch(job, time.Now(),
 		errors.New("git fetch: exit status 128 (output: remote: Repository not found.)"))
-	if gone.Status != "gone" {
-		t.Fatalf("a not-found fetch should be gone, got %q", gone.Status)
+	if len(gone) != 2 {
+		t.Fatalf("want one result per repo of the mirror, got %d", len(gone))
+	}
+	for _, r := range gone {
+		if r.Status != "gone" {
+			t.Fatalf("a not-found fetch should be gone for %s, got %q", r.Name, r.Status)
+		}
 	}
 
-	netErr := finishFetch(syncResult{Name: "github.com/acme/flaky"}, time.Now(),
+	job = mirrorJob{key: "github.com/acme/flaky", url: "https://github.com/acme/flaky",
+		repos: []syncTarget{{name: "github.com/acme/flaky"}}}
+	netErr := failAllFetch(job, time.Now(),
 		errors.New("git fetch: exit status 128 (output: fatal: unable to access: connection refused)"))
-	if netErr.Status != "error" {
-		t.Fatalf("a transient fetch error should stay error, got %q", netErr.Status)
+	if netErr[0].Status != "error" {
+		t.Fatalf("a transient fetch error should stay error, got %q", netErr[0].Status)
 	}
 }
 

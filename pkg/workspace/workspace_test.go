@@ -109,21 +109,27 @@ func TestParseReflogUnix(t *testing.T) {
 
 func TestCloneArgs(t *testing.T) {
 	t.Run("no git config", func(t *testing.T) {
-		got := cloneArgs("/cache", "https://x/y", "main", "/dest", nil)
-		want := []string{"clone", "--reference", "/cache", "--branch", "main", "--", "https://x/y", "/dest"}
+		got := cloneArgs("/repos/x", "main", "/dest", nil)
+		want := []string{"clone", "--branch", "main", "--", "/repos/x", "/dest"}
+		assertArgs(t, got, want)
+	})
+
+	t.Run("no branch clones the catalog's HEAD", func(t *testing.T) {
+		got := cloneArgs("/repos/x", "", "/dest", nil)
+		want := []string{"clone", "--", "/repos/x", "/dest"}
 		assertArgs(t, got, want)
 	})
 
 	t.Run("git config seeded as sorted --config flags before --", func(t *testing.T) {
-		got := cloneArgs("/cache", "https://x/y", "main", "/dest", map[string]string{
+		got := cloneArgs("/repos/x", "main", "/dest", map[string]string{
 			"user.email":     "me@work.com",
 			"core.hooksPath": ".githooks",
 		})
 		want := []string{
-			"clone", "--reference", "/cache", "--branch", "main",
+			"clone", "--branch", "main",
 			"--config", "core.hooksPath=.githooks", // sorted: core before user
 			"--config", "user.email=me@work.com",
-			"--", "https://x/y", "/dest",
+			"--", "/repos/x", "/dest",
 		}
 		assertArgs(t, got, want)
 	})
@@ -231,5 +237,41 @@ func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// pathWithin must tolerate a symlinked component on either side (a symlinked
+// $HOME is common on macOS and NixOS): git may record the resolved form of a
+// clone source while shed computes the symlinked form, or vice versa. A raw
+// mismatch there must still count as "inside" — otherwise a half-created
+// workspace is refused as "already exists" instead of repaired. Non-path
+// origins (https URLs) must never match.
+func TestPathWithinResolvesSymlinks(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "repos", "x"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+
+	inside := filepath.Join(real, "repos", "x")
+	if !pathWithin(inside, real) {
+		t.Error("raw prefix match should hold")
+	}
+	// Origin recorded via the symlink, root computed resolved — and vice versa.
+	if !pathWithin(filepath.Join(link, "repos", "x"), real) {
+		t.Error("symlinked path inside resolved root should match")
+	}
+	if !pathWithin(inside, link) {
+		t.Error("resolved path inside symlinked root should match")
+	}
+	if pathWithin("https://github.com/acme/widget.git", real) {
+		t.Error("a URL origin must never count as shed-owned")
+	}
+	if pathWithin(filepath.Join(base, "elsewhere"), real) {
+		t.Error("a sibling path must not count as inside")
 	}
 }

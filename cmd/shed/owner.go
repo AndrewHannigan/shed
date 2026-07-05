@@ -75,7 +75,7 @@ shaped argument is tracked as an owner rather than a single repo. See
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// asOwner=true forces the owner reading regardless of the argument's
 			// shape — that's the whole point of the owner-scoped form.
-			return runRepoAdd(args[0], name, true, false)
+			return runRepoAdd(args[0], name, "", true, false)
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "override the default name (derived from URL)")

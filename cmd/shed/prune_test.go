@@ -127,3 +127,13 @@ func TestGhRepoFromName(t *testing.T) {
 		})
 	}
 }
+
+// A track-pinned repo's catalog name carries an "@<track>" suffix that is not
+// part of the GitHub OWNER/REPO slug; ghRepoFromName must strip it so
+// workspaces of tracked versions stay reclaimable.
+func TestGhRepoFromNameStripsTrack(t *testing.T) {
+	host, repo, ok := ghRepoFromName("github.com/apache/airflow@v2-7-stable")
+	if !ok || host != "github.com" || repo != "apache/airflow" {
+		t.Fatalf("ghRepoFromName = (%q, %q, %v), want (github.com, apache/airflow, true)", host, repo, ok)
+	}
+}

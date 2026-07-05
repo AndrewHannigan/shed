@@ -9,9 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AndrewHannigan/shed/pkg/catalog"
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
@@ -19,15 +20,18 @@ func newRmCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "rm <name>...",
-		Short: "Remove tracked repos or owners (config, store on disk, and workspaces)",
+		Short: "Remove tracked repos or owners (config, checkout on disk, and workspaces)",
 		Long: `rm removes one or more tracked repos or owners.
 
-For a repo, this deletes its config entry, its store on disk, and every
-workspace derived from it. When removing it would also delete one or more
-workspaces, rm asks for confirmation first.
+For a repo, this deletes its config entry, its read-only checkout on disk,
+and every workspace derived from it. The shared mirror behind the checkout
+is left in place (other versions of the same upstream may still use it);
+'shed prune' deletes mirrors once nothing references them. When removing a
+repo would also delete one or more workspaces, rm asks for confirmation
+first.
 
 For an owner, this removes the owner entry and every repo it auto-added,
-along with their workspaces and stores. rm asks for confirmation first;
+along with their workspaces and checkouts. rm asks for confirmation first;
 answering no keeps the repos — they stay on disk, just untied from the
 owner (Source cleared) so a later sync no longer manages them.
 
@@ -149,7 +153,7 @@ func runRepoRmOne(r *config.Repo, force bool) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	// Removing a repo also tears down its workspaces and store. If that would
+	// Removing a repo also tears down its workspaces and checkout. If that would
 	// destroy any workspace, confirm first (unless --force).
 	if !force && len(workspaces) > 0 {
 		if !confirmRepoRemoval(resolved, workspaces) {
@@ -170,7 +174,7 @@ func runRepoRmOne(r *config.Repo, force bool) error {
 		return rmOwnedRepo(r, resolved, force, workspaces)
 	}
 
-	if err := removeRepoArtifacts(resolved); err != nil {
+	if err := removeRepoArtifacts(resolved, r); err != nil {
 		return err
 	}
 
@@ -182,7 +186,7 @@ func runRepoRmOne(r *config.Repo, force bool) error {
 	if len(workspaces) > 0 {
 		fmt.Printf(", %s", pluralize(len(workspaces), "workspace"))
 	}
-	fmt.Println(", store on disk)")
+	fmt.Println(", checkout on disk)")
 	return nil
 }
 
@@ -190,7 +194,7 @@ func runRepoRmOne(r *config.Repo, force bool) error {
 // silently removing the config entry (which would be re-created on the next
 // sync), it adds the repo to the owner's Exclude list so it stays gone.
 func rmOwnedRepo(r *config.Repo, resolved string, force bool, workspaces []workspace.Info) error {
-	if err := removeRepoArtifacts(resolved); err != nil {
+	if err := removeRepoArtifacts(resolved, r); err != nil {
 		return err
 	}
 
@@ -237,14 +241,14 @@ func rmOwnedRepo(r *config.Repo, resolved string, force bool, workspaces []works
 	if len(workspaces) > 0 {
 		fmt.Printf(", %s", pluralize(len(workspaces), "workspace"))
 	}
-	fmt.Println(", store on disk)")
+	fmt.Println(", checkout on disk)")
 	fmt.Printf("  note: %s was auto-added by owner %s — it has been added\n", resolved, ownerName)
 	fmt.Printf("        to that owner's exclude list so it won't be re-added on sync.\n")
 	return nil
 }
 
 // runOwnerRm removes an owner entry and every repo it auto-added (Source ==
-// owner). Because that also deletes those repos' workspaces and stores, it
+// owner). Because that also deletes those repos' workspaces and checkouts, it
 // confirms first unless --force: answering no (or running non-interactively)
 // keeps the repos, untied from the owner, via untieOwner. Once removal is
 // confirmed it still refuses to discard unsaved work without --force.
@@ -273,7 +277,7 @@ func runOwnerRm(o *config.Owner, force bool) error {
 		return nil
 	}
 
-	// Removing the owner would delete its repos and their workspaces/stores.
+	// Removing the owner would delete its repos and their workspaces/checkouts.
 	// Confirm first (unless --force); answering no keeps the repos, untied
 	// from the owner.
 	if !force {
@@ -291,7 +295,7 @@ func runOwnerRm(o *config.Owner, force bool) error {
 	// Remove on-disk artifacts for each managed repo first, then drop the
 	// owner entry plus all its repo entries from config in one transaction.
 	for _, resolved := range managed {
-		if err := removeRepoArtifacts(resolved); err != nil {
+		if err := removeRepoArtifacts(resolved, c.FindByName(resolved)); err != nil {
 			return err
 		}
 	}
@@ -310,7 +314,7 @@ func runOwnerRm(o *config.Owner, force bool) error {
 	if len(workspaces) > 0 {
 		fmt.Printf(", %s", pluralize(len(workspaces), "workspace"))
 	}
-	fmt.Println(", stores on disk)")
+	fmt.Println(", checkouts on disk)")
 	return nil
 }
 
@@ -334,7 +338,7 @@ func blockedWorkspaces(workspaces []workspace.Info) []string {
 }
 
 // untieOwner removes an owner entry but keeps the repos it added, clearing
-// their Source so they become ordinary user-added repos. Workspaces and stores
+// their Source so they become ordinary user-added repos. Workspaces and checkouts
 // are left untouched. This is the "no" answer to the owner-removal prompt:
 // drop the owner, keep everything it managed.
 func untieOwner(ownerName string, repoCount, wsCount int) error {
@@ -373,7 +377,7 @@ func untieOwner(ownerName string, repoCount, wsCount int) error {
 // destroy workspaces, returning true to proceed. When stdin isn't a TTY it
 // refuses rather than destroy workspaces unattended (use --force).
 func confirmRepoRemoval(resolved string, workspaces []workspace.Info) bool {
-	fmt.Fprintf(os.Stderr, "Removing %s will delete %s (and its store on disk).\n",
+	fmt.Fprintf(os.Stderr, "Removing %s will delete %s (and its checkout on disk).\n",
 		resolved, pluralize(len(workspaces), "workspace"))
 	if blocked := blockedWorkspaces(workspaces); len(blocked) > 0 {
 		fmt.Fprintf(os.Stderr, "  %d of them have unsaved work and need --force to delete.\n", len(blocked))
@@ -400,7 +404,7 @@ func confirmOwnerRemoval(ownerName string, managed []string, workspaces []worksp
 	if len(workspaces) > 0 {
 		fmt.Fprintf(os.Stderr, " and %s", pluralize(len(workspaces), "workspace"))
 	}
-	fmt.Fprintln(os.Stderr, " (and their stores on disk).")
+	fmt.Fprintln(os.Stderr, " (and their checkouts on disk).")
 	if blocked := blockedWorkspaces(workspaces); len(blocked) > 0 {
 		fmt.Fprintf(os.Stderr, "  %d of them have unsaved work and need --force to delete.\n", len(blocked))
 	}
@@ -421,19 +425,43 @@ func readYes() bool {
 	return line == "y" || line == "yes"
 }
 
-// removeRepoArtifacts deletes a repo's workspaces and store from disk (but not
-// its config entry). On-disk artifacts are removed before config so a failure
-// partway through leaves the entry as a record of remaining cleanup.
-func removeRepoArtifacts(resolved string) error {
+// removeRepoArtifacts deletes a repo's workspaces and its read-only checkout
+// from disk (but not its config entry). On-disk artifacts are removed before
+// config so a failure partway through leaves the entry as a record of
+// remaining cleanup. The shared mirror is deliberately left alone — other
+// repos may track the same upstream, and `shed prune` removes mirrors that no
+// config entry references.
+func removeRepoArtifacts(resolved string, repo *config.Repo) error {
 	if err := workspace.RemoveAllForRepo(resolved); err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	if err := repostore.Remove(resolved, configLockTimeout); err != nil {
-		if errors.Is(err, repostore.ErrLocked) {
-			return errs.Wrap(errs.Locked, err)
+	key := ""
+	if repo != nil {
+		if k, err := repo.MirrorKey(); err == nil {
+			key = k
 		}
+	}
+	if key != "" && mirror.Exists(key) {
+		// Under the mirror's exclusive lock so a concurrent sync can't race the
+		// worktree removal.
+		lock, err := mirror.AcquireLock(key, true, configLockTimeout)
+		if err != nil {
+			if errors.Is(err, mirror.ErrLocked) {
+				return errs.Wrap(errs.Locked, err)
+			}
+			return errs.Wrap(errs.Config, err)
+		}
+		rmErr := catalog.Remove(key, resolved)
+		// Drop the repo's sync record so it can't resurface in `shed status`.
+		_ = mirror.DropCatalog(key, resolved)
+		lock.Unlock()
+		if rmErr != nil {
+			return errs.Wrap(errs.Config, rmErr)
+		}
+	} else if err := catalog.Remove(key, resolved); err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
+	mirror.ClearFirstSyncError(resolved)
 	return nil
 }
 

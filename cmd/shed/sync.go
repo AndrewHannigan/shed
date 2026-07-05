@@ -12,11 +12,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AndrewHannigan/shed/pkg/catalog"
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
 	"github.com/AndrewHannigan/shed/pkg/forge"
+	"github.com/AndrewHannigan/shed/pkg/gitx"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 )
 
 const syncLockTimeout = 5 * time.Minute
@@ -33,19 +35,21 @@ func newSyncCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "sync [<name>...]",
-		Short: "Fetch tracked repos and refresh their read-only working trees",
-		Long: `sync fetches each tracked repo (or the named subset), checks out
-origin/HEAD detached, and re-applies chmod -R a-w on the working tree
-so the store stays read-only.
+		Short: "Fetch each upstream's mirror and refresh the read-only repos",
+		Long: `sync refreshes every tracked repo (or the named subset) in two phases:
+first each upstream's shared mirror is fetched — one network fetch per
+upstream, no matter how many versions of it you track — then each repo's
+checkout is fast-forwarded to its tracked branch (a tracked tag never
+moves) and re-locked read-only.
 
-With --if-older-than, skip repos synced within the given duration.
-Runs in parallel up to --jobs.`,
+With --if-older-than, skip mirrors fetched within the given duration.
+Runs in parallel up to --jobs (one job per mirror).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSync(args, jobs, ifOlderThan, jsonOut)
 		},
 	}
-	cmd.Flags().IntVarP(&jobs, "jobs", "j", syncDefaultJobs, "max concurrent fetches")
-	cmd.Flags().DurationVar(&ifOlderThan, "if-older-than", 0, "skip repos synced within this duration (e.g. 1h)")
+	cmd.Flags().IntVarP(&jobs, "jobs", "j", syncDefaultJobs, "max concurrent mirror fetches")
+	cmd.Flags().DurationVar(&ifOlderThan, "if-older-than", 0, "skip mirrors fetched within this duration (e.g. 1h)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit NDJSON results")
 	return cmd
 }
@@ -56,21 +60,35 @@ type syncResult struct {
 	DurationMs int64  `json:"duration_ms"`
 	Error      string `json:"error,omitempty"`
 	Note       string `json:"note,omitempty"`
-	SizeBytes  int64  `json:"size_bytes,omitempty"`
+	SizeBytes  int64  `json:"size_bytes,omitempty"` // the shared mirror's size
 
-	// locked marks an error caused by a store-lock timeout (vs a network
+	// locked marks an error caused by a mirror-lock timeout (vs a network
 	// failure), so callers can classify it without matching on Error text.
 	// Not serialized — the message in Error carries the user-facing detail.
 	locked bool
 }
 
+// syncTarget is one catalog repo in a sync's scope.
 type syncTarget struct {
-	name, url string
-	git       map[string]string
+	name, url, track string
+	git              map[string]string
+}
+
+// mirrorJob is one upstream's worth of sync work: a single network fetch of
+// the shared mirror, then a local update per catalog repo tracking it.
+type mirrorJob struct {
+	key   string // mirror identity (host/owner/repo)
+	url   string // fetch transport: the first config entry's URL
+	repos []syncTarget
+	// keyErr is set when no safe mirror identity could be derived from the
+	// URL. Such a job must fail its repos without touching the disk: a raw
+	// URL is not a validated relative path, and joining one under MirrorsDir
+	// could escape it.
+	keyErr error
 }
 
 func runSync(names []string, jobs int, ifOlderThan time.Duration, jsonOut bool) error {
-	if err := repostore.RequireGit(); err != nil {
+	if err := gitx.RequireGit(); err != nil {
 		return errs.Wrap(errs.MissingDep, err)
 	}
 	if jobs < 1 {
@@ -100,24 +118,37 @@ func runSync(names []string, jobs int, ifOlderThan time.Duration, jsonOut bool) 
 		}
 	}
 
+	// Advisory config findings (e.g. two entries sharing a mirror but
+	// disagreeing on transport) — warnings, never failures.
+	for _, w := range c.Warnings() {
+		warnSync("%s", w)
+	}
+
 	targets, err := resolveSyncTargets(c, names)
 	if err != nil {
 		return err
 	}
+	mirrorJobs := groupByMirror(targets)
 
 	if !jsonOut {
-		fmt.Printf("syncing %d repos (jobs=%d)\n", len(targets), jobs)
+		fmt.Printf("syncing %s across %s (jobs=%d)\n",
+			pluralize(len(targets), "repo"), pluralize(len(mirrorJobs), "mirror"), jobs)
 	}
 
-	// Stream git's live clone/fetch progress meter only when a single repo is in
-	// scope and stderr is a terminal — the `shed add <repo>` case, and a targeted
-	// `shed sync <repo>`. With several repos fetching in parallel their meters
-	// would interleave into noise, and piped/JSON output wants no cursor control
-	// codes, so both fall back to the quiet per-line summary.
+	// Stream git's live clone/fetch progress meter only when a single mirror is
+	// in scope and stderr is a terminal — the `shed add <repo>` case, and a
+	// targeted `shed sync <repo>`. With several mirrors fetching in parallel
+	// their meters would interleave into noise, and piped/JSON output wants no
+	// cursor control codes, so both fall back to the quiet per-line summary.
 	var progress io.Writer
-	if !jsonOut && len(targets) == 1 && isTerminal(os.Stderr) {
+	if !jsonOut && len(mirrorJobs) == 1 && isTerminal(os.Stderr) {
 		progress = os.Stderr
 	}
+
+	// Branches every mirror must keep, derived from the FULL config (not just
+	// this sync's scope): a scoped sync must never treat a sibling catalog's
+	// branch as stray.
+	keep := expectedBranchesByMirror(c)
 
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
@@ -128,27 +159,393 @@ func runSync(names []string, jobs int, ifOlderThan time.Duration, jsonOut bool) 
 	}
 	results := make([]syncResult, 0, len(targets))
 
-	for _, t := range targets {
+	for _, job := range mirrorJobs {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(t syncTarget) {
+		go func(job mirrorJob) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r := syncOne(t.name, t.url, t.git, ifOlderThan, progress)
+			rs := syncMirrorJob(job, keep[job.key], ifOlderThan, progress)
 			mu.Lock()
-			results = append(results, r)
-			if jsonOut {
-				_ = enc.Encode(r)
-			} else {
-				printSyncLine(r)
+			for _, r := range rs {
+				results = append(results, r)
+				if jsonOut {
+					_ = enc.Encode(r)
+				} else {
+					printSyncLine(r)
+				}
 			}
 			mu.Unlock()
-		}(t)
+		}(job)
 	}
 	wg.Wait()
 
 	reconcileGone(results, jsonOut)
+	if len(names) == 0 {
+		reportOrphanCatalogs(c, jsonOut)
+	}
 	return summarizeSync(results, len(targets), jsonOut)
+}
+
+// syncMirrorJob runs one upstream's sync: the network phase (fetch the shared
+// mirror, refresh its notion of the default branch, stamp its meta) under the
+// mirror's exclusive lock, then — with the lock released between phases — a
+// local, deterministic update of each catalog repo. keep lists local branches
+// that must survive the stray-branch sweep even if this job doesn't cover
+// their repos.
+func syncMirrorJob(job mirrorJob, keep map[string]bool, ifOlderThan time.Duration, progress io.Writer) []syncResult {
+	start := time.Now()
+
+	// No safe mirror identity: fail every repo of the job without touching
+	// the disk. The standalone first-sync records keep the failure visible in
+	// `shed status` (they are keyed by validated repo names, so they're safe
+	// to write even when the URL isn't).
+	if job.keyErr != nil {
+		out := make([]syncResult, 0, len(job.repos))
+		for _, t := range job.repos {
+			r := syncResult{Name: t.name, Status: "error", Error: job.keyErr.Error()}
+			_ = mirror.RecordFirstSyncError(t.name, job.keyErr.Error())
+			r.DurationMs = time.Since(start).Milliseconds()
+			out = append(out, r)
+		}
+		return out
+	}
+
+	if !mirror.Exists(job.key) {
+		if err := mirror.Create(job.url, job.key, progress); err != nil {
+			return failAllFetch(job, start, err)
+		}
+	}
+
+	lock, err := mirror.AcquireLock(job.key, true, syncLockTimeout)
+	if err != nil {
+		return failAllLock(job, start, err)
+	}
+
+	fetch := true
+	if ifOlderThan > 0 {
+		if m, _ := mirror.LoadMeta(job.key); m != nil && !m.LastSyncAt.IsZero() &&
+			time.Since(m.LastSyncAt) < ifOlderThan {
+			fetch = false
+		}
+	}
+	// A failed fetch (offline, auth, upstream down) is recorded and reported
+	// as a failure — the repo IS stale — but it does not abort the local
+	// phase: the mirror still holds everything from the last successful
+	// fetch, so checkouts are created or kept from that state. This is what
+	// lets a newly added version of an already-mirrored repo materialize
+	// offline, the same graceful degradation `workspace new` promises.
+	var fetchErr error
+	if fetch {
+		if err := mirror.Fetch(job.key, progress); err != nil {
+			fetchErr = err
+		} else if err := mirror.RefreshHead(job.key); err != nil {
+			fetchErr = err
+		}
+		if fetchErr != nil {
+			_ = mirror.RecordFetchError(job.key, fetchErr.Error())
+		} else {
+			_ = mirror.RecordFetchOK(job.key, time.Now().UTC())
+		}
+	}
+
+	// Resolve each repo's track against the fetched refs — the pre-check that
+	// turns a deleted upstream branch into "track 'x' no longer exists
+	// upstream" instead of a git internals error — and use the resolved set
+	// (plus keep) to sweep stray local branches out of the mirror. The sweep
+	// is cleanup, not repair; skip it when the refs are known stale.
+	refs := make(map[string]catalog.Ref, len(job.repos))
+	resolveErrs := make(map[string]error)
+	expected := make(map[string]bool, len(keep))
+	for b := range keep {
+		expected[b] = true
+	}
+	for _, t := range job.repos {
+		ref, err := catalog.ResolveTrack(job.key, t.track)
+		if err != nil {
+			resolveErrs[t.name] = err
+			continue
+		}
+		refs[t.name] = ref
+		if !ref.IsTag {
+			expected[ref.Short] = true
+		}
+	}
+	if fetchErr == nil {
+		mirror.PruneStrayBranches(job.key, expected)
+	}
+	lock.Unlock() // released between the network phase and the catalog phase
+
+	// The mirror's size is shared by every repo of the job (catalog checkouts
+	// carry no objects of their own), so walk it once, not once per repo.
+	size, _ := mirror.Size(job.key)
+
+	results := make([]syncResult, 0, len(job.repos))
+	for _, t := range job.repos {
+		results = append(results, syncCatalog(job.key, t, refs[t.name], resolveErrs[t.name], fetchErr, !fetch, size, start))
+	}
+	return results
+}
+
+// syncCatalog runs the local phase for one repo: create/repair/fast-forward
+// its catalog checkout under the mirror's exclusive lock, and record the
+// outcome on the mirror's meta. With fetchErr set the phase still runs — the
+// checkout is materialized or kept from the last-synced state — but the repo
+// reports the fetch failure and no fresh sync is recorded (the data really is
+// stale).
+func syncCatalog(key string, t syncTarget, ref catalog.Ref, resolveErr, fetchErr error, mirrorSkipped bool, size int64, start time.Time) syncResult {
+	r := syncResult{Name: t.name}
+
+	lock, err := mirror.AcquireLock(key, true, syncLockTimeout)
+	if err != nil {
+		// Deliberately NOT persisted to the mirror meta: we don't hold the
+		// lock, so a mutateMeta here would race the very process that does
+		// (and could clobber its fresh records). The holder is actively
+		// syncing this mirror anyway — its outcome is the truthful record.
+		r = fillLockErr(r, key, err)
+		r.DurationMs = time.Since(start).Milliseconds()
+		return r
+	}
+	defer lock.Unlock()
+
+	if resolveErr != nil {
+		// With a failed fetch, the resolve ran against stale refs — a
+		// missing track or apparent emptiness may just mean "never fetched" —
+		// so the fetch failure is the truthful report.
+		if fetchErr != nil {
+			return failFetch(r, start, fetchErr)
+		}
+		// An upstream with no commits is a state, not an error: nothing to
+		// check out yet; the repo materializes on the first sync after
+		// upstream gains commits.
+		if errors.Is(resolveErr, catalog.ErrEmptyUpstream) {
+			_ = mirror.RecordCatalogOK(key, t.name, time.Now().UTC())
+			mirror.ClearFirstSyncError(t.name)
+			r.Status = "ok"
+			r.Note = "empty"
+			r.DurationMs = time.Since(start).Milliseconds()
+			return r
+		}
+		return finishErr(r, key, start, resolveErr)
+	}
+
+	note, err := catalog.Ensure(key, t.name, ref, t.git)
+	if err != nil {
+		return finishErr(r, key, start, err)
+	}
+
+	if fetchErr != nil {
+		// A tag is a permanent pointer: with the tag already in the mirror,
+		// the checkout is exact — a fetch could not have changed it — so a
+		// failed refresh is harmless for this repo and it counts as ok.
+		// (A gone upstream still reports, though: that's a standing reminder
+		// to `shed rm`, not a staleness question.)
+		if ref.IsTag && !looksGoneUpstream(strings.ToLower(fetchErr.Error())) {
+			_ = mirror.RecordCatalogOK(key, t.name, time.Now().UTC())
+			mirror.ClearFirstSyncError(t.name)
+			r.Status = "ok"
+			if note == "created" {
+				r.Note = "created from mirror (offline — a tag never changes)"
+			} else {
+				r.Note = note
+			}
+			r.SizeBytes = size
+			r.DurationMs = time.Since(start).Milliseconds()
+			return r
+		}
+		// A branch checkout really can be behind: the checkout is usable
+		// (created or kept from the last-synced state), but the sync itself
+		// failed — report that, and leave the meta's sync records untouched
+		// so "last sync" keeps meaning "last time the network was reached".
+		r = failFetch(r, start, fetchErr)
+		if note == "created" {
+			r.Note = "checkout created from last-synced state"
+		} else {
+			r.Note = "checkout kept from last-synced state"
+		}
+		return r
+	}
+
+	if mirrorSkipped && note == "" {
+		// No fetch and the checkout was already current: report the skip with
+		// the mirror's real last-fetch age, and leave the meta untouched so
+		// "last sync" keeps meaning "last actual sync".
+		r.Status = "skipped"
+		if m, _ := mirror.LoadMeta(key); m != nil && !m.LastSyncAt.IsZero() {
+			r.Note = fmt.Sprintf("synced %s ago", relDuration(time.Since(m.LastSyncAt)))
+		}
+		r.DurationMs = time.Since(start).Milliseconds()
+		return r
+	}
+
+	_ = mirror.RecordCatalogOK(key, t.name, time.Now().UTC())
+	// Success: drop any standalone first-sync failure record from an earlier
+	// failed clone so it doesn't keep showing up as stale.
+	mirror.ClearFirstSyncError(t.name)
+
+	r.Status = "ok"
+	r.Note = note
+	r.SizeBytes = size
+	r.DurationMs = time.Since(start).Milliseconds()
+	return r
+}
+
+// syncSingle refreshes one repo — its mirror plus its own catalog — for
+// `workspace new`, where exactly one repo is in scope (`add` goes through
+// runSync with the new entry's name instead). The stray-branch keep-set is
+// still derived from the FULL config: a single-repo refresh must never treat
+// a sibling catalog's branch as stray.
+func syncSingle(t syncTarget, progress io.Writer) syncResult {
+	job := groupByMirror([]syncTarget{t})[0]
+	var keep map[string]bool
+	if c, err := config.Load(); err == nil {
+		keep = expectedBranchesByMirror(c)[job.key]
+	}
+	return syncMirrorJob(job, keep, 0, progress)[0]
+}
+
+// groupByMirror buckets sync targets by their upstream's mirror identity, so
+// syncing N versions of one repo costs one network fetch. Order of first
+// appearance is preserved; the first entry's URL is the fetch transport.
+//
+// A URL that yields no identity — unparseable, or parsing to something that
+// is not a safe relative path (repo names get this validation at config
+// time; mirror keys must get it too, or a hostile URL could place the mirror
+// outside MirrorsDir) — produces a job with keyErr set, which fails its
+// repos without ever touching the disk.
+func groupByMirror(targets []syncTarget) []mirrorJob {
+	var jobs []mirrorJob
+	index := make(map[string]int)
+	for _, t := range targets {
+		key, err := paths.DefaultName(t.url)
+		if err == nil {
+			if verr := paths.ValidateName(key); verr != nil {
+				err = fmt.Errorf("unsafe mirror identity derived from URL %q: %w", t.url, verr)
+			}
+		} else {
+			err = fmt.Errorf("cannot derive a mirror identity from URL %q: %w", t.url, err)
+		}
+		bucket := key
+		if err != nil {
+			bucket = "\x00invalid\x00" + t.url
+		}
+		if i, ok := index[bucket]; ok {
+			jobs[i].repos = append(jobs[i].repos, t)
+			continue
+		}
+		index[bucket] = len(jobs)
+		jobs = append(jobs, mirrorJob{key: key, url: t.url, repos: []syncTarget{t}, keyErr: err})
+	}
+	return jobs
+}
+
+// expectedBranchesByMirror returns, per mirror key, the local branch names the
+// FULL config claims — every branch-or-ambiguous track's short name. Used to
+// protect sibling catalogs' branches during a scoped sync's stray-branch
+// sweep. Default-branch repos resolve their name only at sync time, but their
+// branches are checked out by live worktrees and so can't be swept anyway.
+func expectedBranchesByMirror(c *config.Config) map[string]map[string]bool {
+	out := make(map[string]map[string]bool)
+	for _, r := range c.Repos {
+		key, err := r.MirrorKey()
+		if err != nil || r.Track == "" {
+			continue
+		}
+		short, kind := paths.ParseTrack(r.Track)
+		if kind == paths.TrackTag {
+			continue
+		}
+		if out[key] == nil {
+			out[key] = make(map[string]bool)
+		}
+		out[key][short] = true
+	}
+	return out
+}
+
+// failFetch fills one repo's result for a failed network phase: "gone" when
+// the remote no longer resolves, "error" otherwise. Nothing is persisted here
+// — the mirror-level RecordFetchError already holds the record, which
+// StatusFor surfaces for every catalog of the mirror.
+func failFetch(r syncResult, start time.Time, err error) syncResult {
+	if looksGoneUpstream(strings.ToLower(err.Error())) {
+		r.Status = "gone"
+	} else {
+		r.Status = "error"
+	}
+	r.Error = err.Error()
+	r.DurationMs = time.Since(start).Milliseconds()
+	return r
+}
+
+// failAllFetch reports a mirror CREATION failure as one result per repo of
+// the job — with no mirror on disk there is no last-synced state to fall
+// back on, so this is the one network failure that stays a hard stop. Repos
+// with no mirror get standalone first-sync records so status has something
+// to show. (A failed fetch of an EXISTING mirror does not come here: the
+// local phase still runs from the last-synced refs — see syncMirrorJob.)
+func failAllFetch(job mirrorJob, start time.Time, err error) []syncResult {
+	gone := looksGoneUpstream(strings.ToLower(err.Error()))
+	out := make([]syncResult, 0, len(job.repos))
+	for _, t := range job.repos {
+		r := syncResult{Name: t.name, Error: err.Error()}
+		if gone {
+			r.Status = "gone"
+		} else {
+			r.Status = "error"
+		}
+		if !mirror.Exists(job.key) {
+			_ = mirror.RecordFirstSyncError(t.name, err.Error())
+		}
+		r.DurationMs = time.Since(start).Milliseconds()
+		out = append(out, r)
+	}
+	return out
+}
+
+// failAllLock reports a mirror lock acquisition failure for every repo of the
+// job. Nothing is persisted to the mirror meta: without the lock a
+// read-modify-write of shed.meta would race the holder, and the holder — an
+// active sync of this same mirror — is the truthful record anyway.
+func failAllLock(job mirrorJob, start time.Time, err error) []syncResult {
+	out := make([]syncResult, 0, len(job.repos))
+	for _, t := range job.repos {
+		r := fillLockErr(syncResult{Name: t.name}, job.key, err)
+		r.DurationMs = time.Since(start).Milliseconds()
+		out = append(out, r)
+	}
+	return out
+}
+
+// fillLockErr classifies a mirror-lock acquisition failure onto r: a timeout
+// becomes the user-facing "locked: ..." message (and sets the locked flag so
+// summarizeSync exits with the Locked code), anything else passes through.
+func fillLockErr(r syncResult, key string, err error) syncResult {
+	r.Status = "error"
+	if errors.Is(err, mirror.ErrLocked) {
+		r.locked = true
+		r.Error = fmt.Sprintf("locked: could not acquire %s within %s (held by another shed process)",
+			paths.MirrorLockFile(key), syncLockTimeout)
+	} else {
+		r.Error = err.Error()
+	}
+	return r
+}
+
+// finishErr records a repo-level sync failure: fills Error/DurationMs and
+// persists the failure to the mirror's meta (or the standalone first-sync
+// store when no mirror exists) so `ls`, `status`, and the session-context
+// banner surface it.
+func finishErr(r syncResult, key string, start time.Time, err error) syncResult {
+	r.Status = "error"
+	r.Error = err.Error()
+	r.DurationMs = time.Since(start).Milliseconds()
+	if mirror.Exists(key) {
+		_ = mirror.RecordCatalogError(key, r.Name, err.Error())
+	} else {
+		_ = mirror.RecordFirstSyncError(r.Name, err.Error())
+	}
+	return r
 }
 
 // reconcileGone reports the repos whose remote vanished during the fetch pass.
@@ -172,6 +569,34 @@ func reconcileGone(results []syncResult, jsonOut bool) {
 	}
 }
 
+// reportOrphanCatalogs notes on-disk repo dirs that no config entry claims —
+// the usual cause is a changed `track`, which is an identity change
+// (remove-and-add) that leaves the old directory behind. Sync never deletes
+// them itself; `shed prune` does.
+func reportOrphanCatalogs(c *config.Config, jsonOut bool) {
+	onDisk, err := catalog.OnDisk()
+	if err != nil || len(onDisk) == 0 {
+		return
+	}
+	known := make(map[string]bool, len(c.Repos))
+	for _, r := range c.Repos {
+		if n, err := r.ResolvedName(); err == nil {
+			known[n] = true
+		}
+	}
+	out := os.Stdout
+	if jsonOut {
+		out = os.Stderr
+	}
+	for _, name := range onDisk {
+		if known[name] {
+			continue
+		}
+		fmt.Fprintf(out, "  note: %s is on disk but not in the config (changed track?)\n", name)
+		fmt.Fprintf(out, "        `shed prune` will remove it\n")
+	}
+}
+
 func resolveSyncTargets(c *config.Config, names []string) ([]syncTarget, error) {
 	if len(names) == 0 {
 		out := make([]syncTarget, 0, len(c.Repos))
@@ -180,23 +605,24 @@ func resolveSyncTargets(c *config.Config, names []string) ([]syncTarget, error) 
 			if err != nil {
 				return nil, errs.Wrap(errs.Config, err)
 			}
-			out = append(out, syncTarget{n, r.URL, r.Git})
+			out = append(out, syncTarget{n, r.URL, r.Track, r.Git})
 		}
 		return out, nil
 	}
 	out := make([]syncTarget, 0, len(names))
 	seen := make(map[string]bool)
-	add := func(name, url string, git map[string]string) {
-		if !seen[name] {
-			out = append(out, syncTarget{name, url, git})
-			seen[name] = true
+	add := func(t syncTarget) {
+		if !seen[t.name] {
+			out = append(out, t)
+			seen[t.name] = true
 		}
 	}
 	for _, name := range names {
 		// A name may be a repo or an owner. Resolve both: a repo expands to
 		// itself, an owner expands to its managed repos. Matching both (a rare
-		// suffix collision — exact names are unique per §4) is ambiguous → exit
-		// 2 asking for the full name, identical to `repo rm` (§5.0).
+		// suffix collision — exact names are unique across the two by config
+		// validation) is ambiguous → exit 2 asking for the full name, the same
+		// treatment `shed rm` gives it.
 		r, repoErr := c.Resolve(name)
 		o, ownerErr := c.ResolveOwner(name)
 		switch {
@@ -210,7 +636,7 @@ func resolveSyncTargets(c *config.Config, names []string) ([]syncTarget, error) 
 			if err != nil {
 				return nil, errs.Wrap(errs.Config, err)
 			}
-			add(n, r.URL, r.Git)
+			add(syncTarget{n, r.URL, r.Track, r.Git})
 		case ownerErr == nil:
 			on, err := o.ResolvedName()
 			if err != nil {
@@ -218,7 +644,7 @@ func resolveSyncTargets(c *config.Config, names []string) ([]syncTarget, error) 
 			}
 			for _, rn := range c.ReposForOwner(on) {
 				if rr := c.FindByName(rn); rr != nil {
-					add(rn, rr.URL, rr.Git)
+					add(syncTarget{rn, rr.URL, rr.Track, rr.Git})
 				}
 			}
 		default:
@@ -321,6 +747,9 @@ func reconcileOwner(o config.Owner, list ownerLister) (added []string, err error
 // managed repo, or an owner), is in the owner's exclude list, or is a
 // duplicate within the discovered batch. Pure, so the additive/dedupe logic
 // is unit-testable without gh or disk.
+//
+// Owner auto-discovery always materializes default-branch repos; `track`
+// overrides are added by hand, never auto-generated.
 func newOwnerRepos(c *config.Config, o config.Owner, discovered []forge.Repo) []config.Repo {
 	ownerName, err := o.ResolvedName()
 	if err != nil {
@@ -355,139 +784,6 @@ func warnSync(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "warning: "+format+"\n", a...)
 }
 
-func syncOne(name, url string, git map[string]string, ifOlderThan time.Duration, progress io.Writer) syncResult {
-	start := time.Now()
-	r := syncResult{Name: name}
-
-	if !repostore.Exists(name) {
-		if err := repostore.Clone(url, name, progress); err != nil {
-			return finishFetch(r, start, err)
-		}
-	}
-
-	lock, err := repostore.AcquireLock(name, true, syncLockTimeout)
-	if err != nil {
-		if errors.Is(err, repostore.ErrLocked) {
-			r.locked = true
-			return finishErr(r, start, fmt.Errorf(
-				"locked: could not acquire %s within %s (held by another shed process)",
-				paths.RepoStoreLockFile(name), syncLockTimeout))
-		}
-		return finishErr(r, start, err)
-	}
-	defer lock.Unlock()
-
-	if ifOlderThan > 0 {
-		if meta, err := repostore.LoadMeta(name); err == nil && meta != nil {
-			if d := time.Since(meta.LastSyncAt); d < ifOlderThan {
-				r.Status = "skipped"
-				r.Note = fmt.Sprintf("synced %s ago", relDuration(d))
-				r.DurationMs = time.Since(start).Milliseconds()
-				return r
-			}
-		}
-	}
-
-	// Re-enable write before fetch + checkout (prior sync left the tree chmod a-w).
-	// Empty tree (first sync) is fine; UnlockTree is a no-op then.
-	if err := repostore.UnlockTree(name); err != nil {
-		return finishErr(r, start, fmt.Errorf("chmod u+w: %w", err))
-	}
-	if err := repostore.Fetch(name, progress); err != nil {
-		return finishFetch(r, start, err)
-	}
-	// Reconcile per-repo git config into the store's .git/config so options
-	// added to config after the initial clone take effect on the next sync.
-	if err := repostore.SetConfig(name, git); err != nil {
-		return finishErr(r, start, err)
-	}
-	// An empty remote (no commits pushed) has no origin/HEAD to check out;
-	// leave the tree empty and record a successful, "empty" sync rather than
-	// failing every time. A later push makes origin/HEAD resolve normally.
-	hasHEAD, err := repostore.RemoteHEADResolves(name)
-	if err != nil {
-		return finishErr(r, start, err)
-	}
-	if hasHEAD {
-		if err := repostore.CheckoutDetachedHEAD(name); err != nil {
-			return finishErr(r, start, err)
-		}
-	}
-	if err := repostore.LockTree(name); err != nil {
-		return finishErr(r, start, fmt.Errorf("chmod a-w: %w", err))
-	}
-	if err := repostore.SaveMeta(name, &repostore.Meta{LastSyncAt: time.Now().UTC()}); err != nil {
-		return finishErr(r, start, fmt.Errorf("write meta: %w", err))
-	}
-	// Success: drop any standalone first-sync failure record from an earlier
-	// failed clone so it doesn't keep showing up as stale.
-	repostore.ClearFirstSyncError(name)
-
-	r.Status = "ok"
-	if !hasHEAD {
-		r.Note = "empty"
-	}
-	if size, err := repostore.Size(name); err == nil {
-		r.SizeBytes = size
-	}
-	r.DurationMs = time.Since(start).Milliseconds()
-	return r
-}
-
-// finishFetch records a clone/fetch failure. A vanished remote (deleted,
-// renamed, or access revoked — git reports them all as "Repository not found")
-// is classified as the distinct "gone" status rather than a transient error,
-// so summarizeSync keeps it out of the failure tally and reconcileGone can
-// point the user at `shed rm` instead of alarming. Any other fetch error stays
-// a plain "error".
-func finishFetch(r syncResult, start time.Time, err error) syncResult {
-	if looksGoneUpstream(strings.ToLower(err.Error())) {
-		return finishGone(r, start, err)
-	}
-	return finishErr(r, start, err)
-}
-
-func finishErr(r syncResult, start time.Time, err error) syncResult {
-	r.Status = "error"
-	return recordSyncError(r, start, err)
-}
-
-// finishGone marks a sync whose remote no longer resolves. Like finishErr it
-// persists the error so `status` can explain it, but the "gone" status spares
-// it from the failure count and the non-zero exit.
-func finishGone(r syncResult, start time.Time, err error) syncResult {
-	r.Status = "gone"
-	return recordSyncError(r, start, err)
-}
-
-// recordSyncError fills Error/DurationMs and persists the failure to the repo's
-// meta sidecar (or the standalone first-sync store when a failed first clone
-// left no store dir) so `ls`, `status`, and the session-context banner surface
-// it. Shared by the "error" and "gone" finishers.
-func recordSyncError(r syncResult, start time.Time, err error) syncResult {
-	r.Error = err.Error()
-	r.DurationMs = time.Since(start).Milliseconds()
-	// Persist the failure so `ls`, `status`, and the session-context snapshot
-	// can surface it. Best-effort: keep the prior LastSyncAt so the table
-	// still shows the last *successful* sync.
-	if repostore.Exists(r.Name) {
-		m, _ := repostore.LoadMeta(r.Name)
-		if m == nil {
-			m = &repostore.Meta{}
-		}
-		m.LastError = err.Error()
-		m.LastErrorAt = time.Now().UTC()
-		_ = repostore.SaveMeta(r.Name, m)
-	} else {
-		// A failed first clone leaves no store dir, so there's no meta sidecar
-		// to write. Record the error in the standalone store instead — without
-		// it, status would report "synced cleanly" and the staleness banner
-		// would stay silent, the worst outcome during onboarding.
-		_ = repostore.RecordFirstSyncError(r.Name, err.Error())
-	}
-	return r
-}
-
 func printSyncLine(r syncResult) {
 	switch r.Status {
 	case "ok":
@@ -499,9 +795,17 @@ func printSyncLine(r syncResult) {
 	case "skipped":
 		fmt.Printf("  %s  -  skipped (%s)\n", r.Name, r.Note)
 	case "gone":
-		fmt.Printf("  %s  ⚠  gone upstream\n", r.Name)
+		if r.Note != "" {
+			fmt.Printf("  %s  ⚠  gone upstream — %s\n", r.Name, r.Note)
+		} else {
+			fmt.Printf("  %s  ⚠  gone upstream\n", r.Name)
+		}
 	case "error":
-		fmt.Printf("  %s  ✗  %s\n", r.Name, r.Error)
+		if r.Note != "" {
+			fmt.Printf("  %s  ✗  %s — %s\n", r.Name, r.Error, r.Note)
+		} else {
+			fmt.Printf("  %s  ✗  %s\n", r.Name, r.Error)
+		}
 	}
 }
 

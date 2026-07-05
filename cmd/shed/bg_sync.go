@@ -11,15 +11,16 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/AndrewHannigan/shed/pkg/config"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 )
 
 const bgSyncWorkerEnv = "SHED_BG_SYNC_WORKER"
 
-// storeEmptyHint nudges the user to populate an empty store. It is printed to
-// stdout for the plain-stdout agents.
-const storeEmptyHint = "shed: store is empty. Run `shed sync` to fetch your tracked repos."
+// storeEmptyHint nudges the user to run the first sync when repos are
+// tracked but nothing has ever been fetched. It is printed to stdout for the
+// plain-stdout agents.
+const storeEmptyHint = "shed: no repos synced yet. Run `shed sync` to fetch your tracked repos."
 
 func newBgSyncCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -85,11 +86,11 @@ func bgSyncWorker() error {
 
 func everSynced(c *config.Config) bool {
 	for _, r := range c.Repos {
-		name, err := r.ResolvedName()
+		key, err := r.MirrorKey()
 		if err != nil {
 			continue
 		}
-		if meta, _ := repostore.LoadMeta(name); meta != nil {
+		if meta, _ := mirror.LoadMeta(key); meta != nil {
 			return true
 		}
 	}
@@ -116,7 +117,7 @@ func configBgInterval() time.Duration {
 }
 
 // bgLogMaxBytes is the size at which openBgLog rotates the bg-sync log so it
-// can't grow unbounded across sessions (SPEC §5.12).
+// can't grow unbounded across sessions.
 const bgLogMaxBytes = 5 << 20 // 5 MB
 
 func openBgLog() (*os.File, error) {

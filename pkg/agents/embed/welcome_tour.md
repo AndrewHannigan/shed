@@ -21,8 +21,8 @@ continue. The tour only moves forward when the user says so.
 - **Run real commands, one at a time.** Show the command, run it, say in a
   sentence or two what happened. Never fabricate output.
 - **Keep narration tight.** One or two plain-language points per step — not every
-  detail. Deeper mechanics (`git clone --reference`, object sharing, the exact
-  `chmod`) are **only worth explaining if the user asks.**
+  detail. Deeper mechanics (the shared per-upstream mirror, hardlinked objects,
+  the exact `chmod`) are **only worth explaining if the user asks.**
 - **If a step fails** (`gh` not authenticated, no network, a push rejected), say
   so plainly, explain what it would have shown, and continue.
 - **Clean up at the end** and tell the user what you removed.

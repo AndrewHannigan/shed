@@ -1,6 +1,6 @@
 # Design: mirrors — offline workspace creation and multi-version checkouts
 
-Status: proposal
+Status: implemented (pkg/mirror, pkg/catalog, pkg/gitx; sync/workspace/prune rewrites)
 Author: design discussion (branch `claude/workspace-cached-repo-creation-bi8yna`)
 
 ## Invariant
@@ -82,7 +82,7 @@ defaults, owns maintenance and repair.
 | Tier | What it is | Writable by | Lifetime | Created by |
 |---|---|---|---|---|
 | **mirror** | fetch-only repo, tree never checked out; upstream truth in `refs/remotes/origin/*` | shed (network fetch) | permanent, one per upstream URL | derived — never configured directly |
-| **catalog repo** | worktree of the mirror on a local branch (or detached at a tag) | shed (ff-merge on sync) | permanent, N per mirror | config (`[[repos]]`) |
+| **catalog repo** | worktree of the mirror on a local branch (or detached at a tag) | shed (ff-merge on sync) | permanent, N per mirror | config (`[[repo]]`) |
 | **workspace** | plain local clone off a catalog repo, origin → upstream | agents | disposable | agents (`shed workspace new`) |
 
 ```
@@ -183,15 +183,15 @@ when entries sharing a mirror disagree on transport.
 `Repo` gains one optional field:
 
 ```toml
-[[repos]]
+[[repo]]
 url = "https://github.com/apache/airflow"
 # track defaults to the upstream default branch
 
-[[repos]]
+[[repo]]
 url = "https://github.com/apache/airflow"
 track = "v2-7-stable"          # a branch: advances on every sync
 
-[[repos]]
+[[repo]]
 url = "https://github.com/apache/airflow"
 track = "2.7.3"                # a tag: never changes
 ```
@@ -199,9 +199,10 @@ track = "2.7.3"                # a tag: never changes
 - **branch** — the catalog worktree sits on local branch `<track>`,
   fast-forwarded to `origin/<track>` on every sync.
 - **tag** — a detached worktree at the tag; sync is a no-op unless the tag
-  itself moved (the forced tag refspec propagates moves/deletions; the old
-  checkout keeps working — its HEAD is a gc root — and `shed ls` flags the
-  divergence).
+  itself moved (the forced tag refspec propagates moves/deletions; when it
+  does move, sync re-detaches the checkout at the new target and reports
+  "tag moved" — the old commit stays gc-safe meanwhile, since the worktree
+  HEAD is a reachability root).
 
 **One repo per `(url, track)` is an invariant**, enforced by
 `config.Validate` even under explicit `name` overrides: two checkouts of

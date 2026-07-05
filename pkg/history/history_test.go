@@ -16,7 +16,9 @@ func setupDataDir(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	dir := paths.DataDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// The history file lives under .internal/; create it so tests can write
+	// the file directly (Record itself also creates it on demand).
+	if err := os.MkdirAll(paths.InternalDir(), 0755); err != nil {
 		t.Fatalf("mkdir data dir: %v", err)
 	}
 	return dir

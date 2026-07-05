@@ -1,5 +1,12 @@
 // Package workspace handles creation, inspection, and removal of
-// writable workspaces derived from stored repos.
+// writable workspaces derived from catalog repos.
+//
+// A workspace is a completely ordinary git repo: a plain local clone of a
+// catalog repo (objects hardlink from the shared mirror, so creation is fast
+// and never touches the network) whose origin is immediately re-pointed at
+// the real upstream. Normal branching, committing, and pushing all work, its
+// removal is a plain delete, and git's own auto-gc keeps a long-lived
+// workspace healthy — shed never maintains workspaces.
 package workspace
 
 import (
@@ -14,11 +21,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AndrewHannigan/shed/pkg/catalog"
+	"github.com/AndrewHannigan/shed/pkg/gitx"
+	"github.com/AndrewHannigan/shed/pkg/mirror"
 	"github.com/AndrewHannigan/shed/pkg/paths"
-	"github.com/AndrewHannigan/shed/pkg/repostore"
 )
 
-const storeLockTimeout = 2 * time.Second
+const mirrorLockTimeout = 2 * time.Second
+
+// lfsSkip keeps the clone from invoking the LFS smudge filter: the mirror
+// never smudges, so it has pointer files only and a smudging clone would
+// fail (or hit the network). LFS blobs are pulled explicitly afterwards —
+// see New.
+var lfsSkip = []string{"GIT_LFS_SKIP_SMUDGE=1"}
 
 // Info is a single workspace's state for listing.
 type Info struct {
@@ -42,81 +57,212 @@ func Exists(name, branch string) bool {
 	return err == nil && s.IsDir()
 }
 
-// New creates a new workspace via `git clone --reference`. Returns the
-// absolute workspace path on success.
+// Source describes the catalog repo a new workspace forks from, resolved by
+// the caller from config + the synced mirror.
+type Source struct {
+	Repo      string            // catalog repo name, e.g. "github.com/foo/bar@v2-7-stable"
+	MirrorKey string            // mirror identity, e.g. "github.com/foo/bar"
+	Track     string            // short name of the ref the catalog checks out
+	URL       string            // real upstream URL — becomes the workspace's origin
+	Git       map[string]string // per-repo git config seeded at clone time
+}
+
+// New creates a new workspace: a plain `git clone` of the catalog repo
+// (purely local — objects hardlink from the mirror's store through the
+// worktree) followed by `git remote set-url origin <upstream>`, so the result
+// is indistinguishable from an ordinary clone of the real upstream. Returns
+// the absolute workspace path and any non-fatal warnings (e.g. LFS blobs
+// unavailable offline).
 //
-// If branch exists on the store's origin refs, checks it out. Otherwise
-// clones starting from base (or origin/HEAD if base is empty) and
-// creates a new local branch named branch.
+// If name exists as an upstream branch, it is checked out. Otherwise a new
+// branch called name is created off base — defaulting to the catalog's own
+// track, so a workspace made from airflow@v2-7-stable bases on v2-7-stable.
 //
-// gitConfig is seeded into the new workspace's .git/config at clone time via
-// `git clone --config`, so the repo's configured git options apply to every
-// later git command in the workspace — including the user's own. Keys are
-// validated by config before reaching here.
-func New(name, branch, base, url string, gitConfig map[string]string) (string, error) {
-	// Guard the path-forming inputs so a name/branch can't escape WorkspacesDir
-	// (filepath.Join would resolve a ".." away). base only ever becomes a git
-	// ref, but validating it too keeps option-injection out of `git clone
-	// --branch`.
-	if err := paths.ValidateName(name); err != nil {
-		return "", err
+// A plain clone sees the mirror's local branches (one per branch-tracked
+// catalog) and its tags, so those bases are a single `clone --branch`. Any
+// other upstream branch (e.g. reviewing a colleague's feature branch) is a
+// two-step: clone the catalog, then fetch that one ref directly from the
+// mirror — still offline, still cheap; the fetched delta is copied rather
+// than hardlinked, which is fine at workspace lifetimes.
+//
+// gitConfig from Source.Git is seeded into the new workspace's .git/config at
+// clone time via `git clone --config`, so the repo's configured git options
+// apply to every later git command in the workspace — including the user's
+// own. Keys are validated by config before reaching here.
+func New(src Source, name, base string) (path string, warnings []string, err error) {
+	// Guard the path-forming inputs so a name/branch can't escape
+	// WorkspacesDir (filepath.Join would resolve a ".." away). base only ever
+	// becomes a git ref, but validating it too keeps option-injection out of
+	// `git clone --branch`.
+	if err := paths.ValidateName(src.Repo); err != nil {
+		return "", nil, err
 	}
-	if err := paths.ValidateBranch(branch); err != nil {
-		return "", err
+	if err := paths.ValidateBranch(name); err != nil {
+		return "", nil, err
 	}
 	if base != "" {
 		if err := paths.ValidateBranch(base); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
-	if !repostore.Exists(name) {
-		return "", fmt.Errorf("stored repo not present; run `shed sync %s` first", name)
+	if !catalog.Valid(src.Repo) {
+		return "", nil, fmt.Errorf("repo not present; run `shed sync %s` first", src.Repo)
 	}
-	wsPath := PathFor(name, branch)
-	if _, err := os.Stat(wsPath); err == nil {
-		return "", fmt.Errorf("workspace already exists at %s", wsPath)
+	wsPath := PathFor(src.Repo, name)
+	if err := clearHalfCreated(wsPath); err != nil {
+		return "", nil, err
 	}
 
-	lock, err := repostore.AcquireLock(name, false, storeLockTimeout)
+	// Shared lock: many workspace creations may clone concurrently, but never
+	// while sync or prune holds the mirror exclusively (a clone racing a
+	// repack is the one hazard). Two separate acquisitions when a caller also
+	// synced — never an in-place flock upgrade (deadlocks).
+	lock, err := mirror.AcquireLock(src.MirrorKey, false, mirrorLockTimeout)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer lock.Unlock()
 
-	branchExists, err := refExists(name, "refs/remotes/origin/"+branch)
+	plan, err := planCheckout(src, name, base)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(wsPath), 0755); err != nil {
-		return "", err
+		return "", nil, err
 	}
-
-	storePath := paths.RepoStorePath(name)
-	if branchExists {
-		if err := runGitClone(storePath, url, branch, wsPath, gitConfig); err != nil {
-			return "", err
+	// Claim the destination atomically: two concurrent creations of the same
+	// name both pass the stat-based checks above, and the loser's clone
+	// failing on "already exists" must never be answered by deleting the
+	// winner's live workspace. Mkdir is the arbiter — exactly one process
+	// owns the path from here on, and every cleanup below removes only a
+	// directory this process created. git clones happily into an existing
+	// empty directory.
+	if err := os.Mkdir(wsPath, 0755); err != nil {
+		if os.IsExist(err) {
+			return "", nil, fmt.Errorf("workspace already exists at %s (created concurrently?)", wsPath)
 		}
-	} else {
-		baseBranch := base
-		if baseBranch == "" {
-			baseBranch, err = defaultBranch(name)
-			if err != nil {
-				return "", err
-			}
-		}
-		if err := runGitClone(storePath, url, baseBranch, wsPath, gitConfig); err != nil {
-			return "", err
-		}
-		if err := runGit(wsPath, "checkout", "-b", branch); err != nil {
-			return "", err
+		return "", nil, err
+	}
+	if err := cloneWithRetry(src, plan, wsPath); err != nil {
+		return "", nil, err
+	}
+	if plan.fetchRef != "" {
+		// The two-step path: the ref exists only as refs/remotes/origin/* in
+		// the mirror, which a plain clone does not copy; fetch just that ref
+		// from the mirror (offline) and check it out.
+		mirrorPath := paths.MirrorPath(src.MirrorKey)
+		refspec := "+refs/remotes/origin/" + plan.fetchRef + ":refs/remotes/origin/" + plan.fetchRef
+		if err := gitx.RunEnv(wsPath, lfsSkip, "fetch", "--", mirrorPath, refspec); err != nil {
+			os.RemoveAll(wsPath)
+			return "", nil, err
 		}
 	}
-	return wsPath, nil
+	for _, args := range plan.postClone {
+		if err := gitx.RunEnv(wsPath, lfsSkip, args...); err != nil {
+			os.RemoveAll(wsPath)
+			return "", nil, err
+		}
+	}
+	// From here on the workspace is a normal clone of the real upstream.
+	if err := gitx.Run(wsPath, "remote", "set-url", "origin", src.URL); err != nil {
+		os.RemoveAll(wsPath)
+		return "", nil, err
+	}
+	// The clone above skipped LFS smudging (the mirror holds pointer files
+	// only); now that origin points at the real upstream, resolve the blobs.
+	// Failure is a warning, not an error: an offline LFS workspace gets
+	// pointer files and says so.
+	if usesLFS(wsPath) {
+		if _, lfsErr := exec.LookPath("git-lfs"); lfsErr != nil {
+			warnings = append(warnings, "repo uses git LFS but git-lfs is not installed; files are pointer stubs")
+		} else if err := gitx.Run(wsPath, "lfs", "pull"); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not fetch LFS objects (offline?); files are pointer stubs: %v", err))
+		}
+	}
+	return wsPath, warnings, nil
 }
 
-func runGitClone(referencePath, url, branch, dest string, gitConfig map[string]string) error {
-	cmd := exec.Command("git", cloneArgs(referencePath, url, branch, dest, gitConfig)...)
+// checkoutPlan is how New realizes the requested branch from what the mirror
+// has on hand.
+type checkoutPlan struct {
+	cloneBranch string     // --branch value; "" clones the catalog's HEAD
+	fetchRef    string     // non-catalog branch to fetch from the mirror after clone
+	postClone   [][]string // git commands run in the workspace after clone/fetch
+}
+
+// planCheckout decides the clone/fetch/checkout steps for a requested
+// workspace name and base, against the refs available in the mirror.
+func planCheckout(src Source, name, base string) (checkoutPlan, error) {
+	mirrorPath := paths.MirrorPath(src.MirrorKey)
+
+	// A workspace named after an existing upstream branch checks that branch
+	// out (with origin/<name> as its upstream, like a clone --branch would).
+	if ok, err := gitx.RefExists(mirrorPath, "refs/remotes/origin/"+name); err != nil {
+		return checkoutPlan{}, err
+	} else if ok {
+		if local, _ := gitx.RefExists(mirrorPath, "refs/heads/"+name); local {
+			// The branch is a catalog branch, so the clone sees it directly.
+			return checkoutPlan{cloneBranch: name}, nil
+		}
+		return checkoutPlan{
+			fetchRef:  name,
+			postClone: [][]string{{"checkout", "-b", name, "origin/" + name}},
+		}, nil
+	}
+
+	// Otherwise: a new branch called name, forked from base (default: the
+	// catalog's own track).
+	target := base
+	if target == "" {
+		target = src.Track
+	}
+	newBranch := []string{"checkout", "-b", name}
+	if local, _ := gitx.RefExists(mirrorPath, "refs/heads/"+target); local {
+		return checkoutPlan{cloneBranch: target, postClone: [][]string{newBranch}}, nil
+	}
+	// Tags are copied by a plain local clone, so `--branch <tag>` works and
+	// leaves HEAD detached; the new branch is then created from it.
+	if tag, _ := gitx.RefExists(mirrorPath, "refs/tags/"+target); tag {
+		return checkoutPlan{cloneBranch: target, postClone: [][]string{newBranch}}, nil
+	}
+	if remote, _ := gitx.RefExists(mirrorPath, "refs/remotes/origin/"+target); remote {
+		return checkoutPlan{
+			fetchRef: target,
+			postClone: [][]string{
+				{"checkout", "--no-track", "-b", name, "refs/remotes/origin/" + target},
+			},
+		}, nil
+	}
+	return checkoutPlan{}, fmt.Errorf("base %q not found upstream (no such branch or tag)", target)
+}
+
+// cloneWithRetry clones the catalog into dest (an empty directory this
+// process already claimed via Mkdir), retrying once after a cleanup —
+// insurance against losing a race with a rogue (agent-run) gc repacking the
+// mirror mid-clone; shed's own gc never runs while creation holds the shared
+// lock. The re-claim between attempts keeps the Mkdir arbitration honest: if
+// another process takes the path the moment we release it, we back off with
+// the original error rather than touch their directory.
+func cloneWithRetry(src Source, plan checkoutPlan, dest string) error {
+	err := runClone(src, plan, dest)
+	if err == nil {
+		return nil
+	}
+	os.RemoveAll(dest)
+	if mkErr := os.Mkdir(dest, 0755); mkErr != nil {
+		return err
+	}
+	if err2 := runClone(src, plan, dest); err2 == nil {
+		return nil
+	}
+	os.RemoveAll(dest)
+	return err
+}
+
+func runClone(src Source, plan checkoutPlan, dest string) error {
+	cmd := exec.Command("git", cloneArgs(paths.CatalogPath(src.Repo), plan.cloneBranch, dest, src.Git)...)
+	cmd.Env = append(os.Environ(), lfsSkip...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git clone: %w (output: %s)", err, strings.TrimSpace(string(out)))
@@ -128,14 +274,77 @@ func runGitClone(referencePath, url, branch, dest string, gitConfig map[string]s
 // into the new clone's .git/config; they are emitted in sorted order for
 // deterministic behavior. Keys are validated by config (no leading "-") so
 // they can't be parsed as git options. The trailing "--" terminates options
-// so a url beginning with "-" can't be parsed as a git flag (argument
-// injection); url and dest are strictly positional.
-func cloneArgs(referencePath, url, branch, dest string, gitConfig map[string]string) []string {
-	args := []string{"clone", "--reference", referencePath, "--branch", branch}
+// so a path beginning with "-" can't be parsed as a git flag (argument
+// injection); source and dest are strictly positional.
+func cloneArgs(catalogPath, branch, dest string, gitConfig map[string]string) []string {
+	args := []string{"clone"}
+	if branch != "" {
+		args = append(args, "--branch", branch)
+	}
 	for _, k := range sortedKeys(gitConfig) {
 		args = append(args, "--config", k+"="+gitConfig[k])
 	}
-	return append(args, "--", url, dest)
+	return append(args, "--", catalogPath, dest)
+}
+
+// clearHalfCreated inspects an already-existing workspace path. A directory
+// whose origin still points into shed's own data dir is the crash window
+// between clone and `remote set-url` — the mirror's pre-receive hook keeps
+// any push there failing loudly, and here it is repaired by replacement.
+// Anything else that exists is a real workspace and an error.
+func clearHalfCreated(wsPath string) error {
+	if _, err := os.Stat(wsPath); err != nil {
+		return nil // nothing there
+	}
+	if originIsShedOwned(wsPath) {
+		return os.RemoveAll(wsPath)
+	}
+	return fmt.Errorf("workspace already exists at %s", wsPath)
+}
+
+// HalfCreated reports whether the directory at (repo, name) is a half-created
+// workspace leftover — one whose origin still points into shed's own data dir
+// because a crash hit between clone and `remote set-url`. Callers use it to
+// let creation repair-by-replacement instead of refusing with "already
+// exists".
+func HalfCreated(repo, name string) bool {
+	p := PathFor(repo, name)
+	if _, err := os.Stat(p); err != nil {
+		return false
+	}
+	return originIsShedOwned(p)
+}
+
+func originIsShedOwned(wsPath string) bool {
+	origin, err := gitx.Output(wsPath, "remote", "get-url", "origin")
+	return err == nil && pathWithin(origin, paths.DataDir())
+}
+
+// pathWithin reports whether p lies inside root, tolerating a symlinked
+// component (a symlinked $HOME is common on macOS and NixOS): the raw
+// strings are compared first, then both sides symlink-resolved. Without the
+// resolved comparison, a half-created workspace goes undetected — refused as
+// "already exists" instead of repaired — whenever the origin path git
+// recorded and the DataDir shed computes differ only by a symlink. A p that
+// is not a local path (a real workspace's https origin) fails EvalSymlinks
+// and falls back to the raw comparison alone.
+func pathWithin(p, root string) bool {
+	sep := string(filepath.Separator)
+	if strings.HasPrefix(p, root+sep) {
+		return true
+	}
+	rp, err1 := filepath.EvalSymlinks(p)
+	rroot, err2 := filepath.EvalSymlinks(root)
+	return err1 == nil && err2 == nil && strings.HasPrefix(rp, rroot+sep)
+}
+
+// usesLFS reports whether any committed .gitattributes declares the LFS
+// filter. Exit status 1 from git grep means "no match", any other failure is
+// treated the same — the caller only skips an optional lfs pull.
+func usesLFS(dir string) bool {
+	cmd := exec.Command("git", "-C", dir, "grep", "-l", "--cached", "-e", "filter=lfs",
+		"--", ".gitattributes", ":(glob)**/.gitattributes")
+	return cmd.Run() == nil
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -145,40 +354,6 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func runGit(dir string, args ...string) error {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git %s: %w (output: %s)", args[0], err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func refExists(name, ref string) (bool, error) {
-	cmd := exec.Command("git", "-C", paths.RepoStorePath(name),
-		"show-ref", "--verify", "--quiet", ref)
-	err := cmd.Run()
-	if err == nil {
-		return true, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return false, nil
-	}
-	return false, err
-}
-
-func defaultBranch(name string) (string, error) {
-	cmd := exec.Command("git", "-C", paths.RepoStorePath(name),
-		"symbolic-ref", "refs/remotes/origin/HEAD")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("could not resolve origin/HEAD: %w", err)
-	}
-	full := strings.TrimSpace(string(out))
-	return strings.TrimPrefix(full, "refs/remotes/origin/"), nil
 }
 
 // List returns all workspaces present on disk, scoped to the given repo

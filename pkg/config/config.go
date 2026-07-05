@@ -31,6 +31,12 @@ type Settings struct {
 type Repo struct {
 	URL  string `toml:"url"`
 	Name string `toml:"name,omitempty"`
+	// Track pins which upstream ref this repo's checkout follows. Empty means
+	// the upstream default branch. A branch advances (fast-forwards) on every
+	// sync; a tag never changes. Bare short names resolve branch-first; the
+	// full-ref forms "heads/<name>" / "tags/<name>" are the escape hatch when
+	// a branch and tag share a name.
+	Track string `toml:"track,omitempty"`
 	// Source, when set, is the resolved name of the [[owner]] entry that
 	// auto-added this repo (see Owner). Empty means the repo was added by
 	// the user directly. Auto-managed repos are reconciled on each sync;
@@ -63,12 +69,22 @@ type Owner struct {
 	Exclude []string `toml:"exclude,omitempty"`
 }
 
-// Name returns the effective name for a repo: the explicit Name field if
-// set, else the default derived from URL.
+// ResolvedName returns the effective name for a repo: the explicit Name field
+// if set, else the default derived from URL and Track ("host/owner/repo" for
+// the default branch, "host/owner/repo@<track>" for a tracked ref — see
+// paths.DefaultRepoName).
 func (r Repo) ResolvedName() (string, error) {
 	if r.Name != "" {
 		return r.Name, nil
 	}
+	return paths.DefaultRepoName(r.URL, r.Track)
+}
+
+// MirrorKey returns the identity of the mirror this repo shares: the
+// URL-derived "host/owner/repo" path, never the raw URL string, so two config
+// entries for one upstream over different transports (https:// and git@…:)
+// share one mirror.
+func (r Repo) MirrorKey() (string, error) {
 	return paths.DefaultName(r.URL)
 }
 
@@ -150,6 +166,12 @@ func WithLock(timeout time.Duration, fn func(*Config) error) error {
 	defer cancel()
 	locked, err := lock.TryLockContext(ctx, 100*time.Millisecond)
 	if err != nil {
+		// flock reports a timeout as (false, ctx.Err()), so the deadline is
+		// what actually signals contention — translate it so callers'
+		// errors.Is(err, ErrLocked) classification works.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return ErrLocked
+		}
 		return err
 	}
 	if !locked {
@@ -163,14 +185,25 @@ func WithLock(timeout time.Duration, fn func(*Config) error) error {
 	return fn(c)
 }
 
-// Validate enforces invariants: every repo and owner has a URL, and every
+// Validate enforces invariants: every repo and owner has a URL; every
 // (resolved) name is unique across both repos and owners (they share one
-// namespace because commands resolve a single argument against both).
+// namespace because commands resolve a single argument against both) — which,
+// because names embed the sanitized track, also rejects two tracks that
+// sanitize to the same on-disk path; every track is safe to hand to git; and
+// no two repos share a (mirror, track) pair — two checkouts of one ref would
+// be identical read-only trees, and the 1:1 track↔catalog-branch mapping is
+// what lets each mirror branch belong to exactly one worktree.
 func (c *Config) Validate() error {
-	seen := make(map[string]string) // resolved name -> "repo N" / "owner N"
+	seen := make(map[string]string)      // resolved name -> "repo N" / "owner N"
+	seenTrack := make(map[string]string) // mirror key + "\x00" + track -> "repo N"
 	for i, r := range c.Repos {
 		if r.URL == "" {
 			return fmt.Errorf("repo[%d]: url is required", i)
+		}
+		if r.Track != "" {
+			if err := paths.ValidateTrack(r.Track); err != nil {
+				return fmt.Errorf("repo[%d] (%q): %w", i, r.URL, err)
+			}
 		}
 		name, err := r.ResolvedName()
 		if err != nil {
@@ -188,6 +221,17 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("name %q appears in both %s and repo %d", name, prev, i)
 		}
 		seen[name] = fmt.Sprintf("repo %d", i)
+		// One repo per (upstream, track), even under explicit name overrides.
+		// Keyed by the mirror identity (host/owner/repo), not the raw URL, so
+		// the same ref over two transports still counts as a duplicate.
+		if key, err := r.MirrorKey(); err == nil {
+			tk := key + "\x00" + r.Track
+			if prev, ok := seenTrack[tk]; ok {
+				return fmt.Errorf("repo %d duplicates %s: same upstream %q and track %q",
+					i, prev, key, r.Track)
+			}
+			seenTrack[tk] = fmt.Sprintf("repo %d", i)
+		}
 	}
 	for i, o := range c.Owners {
 		if o.URL == "" {
@@ -206,6 +250,35 @@ func (c *Config) Validate() error {
 		seen[name] = fmt.Sprintf("owner %d", i)
 	}
 	return nil
+}
+
+// Warnings returns advisory (non-fatal) config findings. Today that is one
+// check: repos that share a mirror (same upstream identity) but disagree on
+// transport (https:// vs git@…:). The mirror fetches with the first entry's
+// URL, so the other entries' transport choice is silently ignored — worth a
+// warning, not an error.
+func (c *Config) Warnings() []string {
+	firstURL := make(map[string]string) // mirror key -> first URL seen
+	var warnings []string
+	warned := make(map[string]bool)
+	for _, r := range c.Repos {
+		key, err := r.MirrorKey()
+		if err != nil {
+			continue
+		}
+		prev, ok := firstURL[key]
+		if !ok {
+			firstURL[key] = r.URL
+			continue
+		}
+		if prev != r.URL && paths.IsSSHURL(prev) != paths.IsSSHURL(r.URL) && !warned[key] {
+			warnings = append(warnings, fmt.Sprintf(
+				"repos sharing the mirror for %s disagree on transport (%s vs %s); fetches use %s",
+				key, prev, r.URL, prev))
+			warned[key] = true
+		}
+	}
+	return warnings
 }
 
 // FindByName returns the repo entry with the given resolved name, or nil
@@ -245,9 +318,9 @@ func (c *Config) ReposForOwner(owner string) []string {
 	return names
 }
 
-// Resolve finds the config entry matching name, per SPEC §5.0: an exact
-// match on the resolved name wins; otherwise an unambiguous suffix match
-// on path-segment ("/") boundaries is used. Returns an errs.Coded with
+// Resolve finds the config entry matching name — the one resolution rule
+// used shed-wide: an exact match on the resolved name wins; otherwise an
+// unambiguous suffix match on path-segment ("/") boundaries is used. Returns an errs.Coded with
 // NotFound when nothing matches or when a suffix matches more than one
 // repo (the message lists the candidates so the user can disambiguate).
 func (c *Config) Resolve(name string) (*Repo, error) {
@@ -320,7 +393,8 @@ func EmptyTemplate() []byte {
 # Manual entries look like:
 # [[repo]]
 # url = "https://github.com/owner/name"
-# # name = "owner/name"   # optional; default derived from URL
+# # name = "owner/name"   # optional; default derived from URL (and track)
+# # track = "v2-7-stable" # optional; branch or tag to follow (default: default branch)
 # # git = { "user.email" = "me@work.com" }   # git config, applied to clones
 #
 # [[owner]]

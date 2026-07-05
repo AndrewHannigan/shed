@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,6 +43,12 @@ func Record(args []string) error {
 	}
 	line, err := json.Marshal(Event{Time: time.Now().UTC(), Args: args})
 	if err != nil {
+		return err
+	}
+	// The log lives under .internal/, which may not exist yet on an older or
+	// freshly-initialized shed; creating it does not resurrect the data dir
+	// (the stat above already guards that).
+	if err := os.MkdirAll(filepath.Dir(paths.HistoryFile()), 0755); err != nil {
 		return err
 	}
 	f, err := os.OpenFile(paths.HistoryFile(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)

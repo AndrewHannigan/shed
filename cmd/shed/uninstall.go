@@ -88,7 +88,7 @@ func runPurge() error {
 
 // removeAllForce deletes dir like os.RemoveAll, but first restores the
 // owner write bit on every directory in the tree. sync leaves stored repos
-// chmod a-w (see repostore.LockTree), and os.RemoveAll cannot unlink entries
+// chmod a-w (see catalog.LockTree), and os.RemoveAll cannot unlink entries
 // inside a directory that lacks write permission, so a plain RemoveAll
 // fails partway through with EACCES. Only directories need fixing:
 // removing an entry depends on the parent dir's mode, not the entry's own.
