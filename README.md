@@ -125,7 +125,7 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 |---------|--------------|
 | `shed init` | Bootstrap dirs + integrate with detected agents (`--uninstall` reverses it) |
 | `shed add <repo\|owner>` | Add a repo — or a whole user/org — to the library |
-| `shed rm <name>…` | Remove tracked repos or owners (and their stores/workspaces) |
+| `shed rm <name>…` | Remove tracked repos or owners (and their stores/workspaces); a workspace name removes just that workspace |
 | `shed ls` | List owners, repos, and workspaces — everything shed manages |
 | `shed repo ls` | List just the read-only repos (no owners or workspaces) |
 | `shed repo add <repo\|owner>` | Same as `shed add` (grouped under the `repo` noun) |

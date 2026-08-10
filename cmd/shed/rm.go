@@ -20,8 +20,8 @@ func newRmCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "rm <name>...",
-		Short: "Remove tracked repos or owners (config, checkout on disk, and workspaces)",
-		Long: `rm removes one or more tracked repos or owners.
+		Short: "Remove tracked repos, owners, or workspaces (config and disk)",
+		Long: `rm removes one or more tracked repos, owners, or workspaces.
 
 For a repo, this deletes its config entry, its read-only checkout on disk,
 and every workspace derived from it. The shared mirror behind the checkout
@@ -34,6 +34,12 @@ For an owner, this removes the owner entry and every repo it auto-added,
 along with their workspaces and checkouts. rm asks for confirmation first;
 answering no keeps the repos — they stay on disk, just untied from the
 owner (Source cleared) so a later sync no longer manages them.
+
+A name that matches neither a repo nor an owner but does name a workspace
+removes just that workspace, exactly as 'shed workspace rm' would: rm
+refuses if it has uncommitted or unpushed changes unless --force is given.
+A name that matches both kinds is an error — use the full repo/owner name,
+or 'shed workspace rm', to say which you mean.
 
 Several names may be given at once (e.g. "shed rm a b c"); each is removed
 independently, so a failure on one (a typo, or a workspace with unsaved
@@ -121,26 +127,70 @@ func dedupeStrings(s []string) []string {
 func runRepoRm(name string, force bool) error {
 	// Resolve the name without mutating config yet, so we can run safety
 	// checks on the workspaces before deleting anything. A name may refer to
-	// a repo or an owner; resolve both and disambiguate.
+	// a repo, an owner, or a workspace; resolve all three and disambiguate.
 	c, err := config.Load()
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
 	owner, ownerErr := c.ResolveOwner(name)
 	repo, repoErr := c.Resolve(name)
+	_, _, wsFound := workspace.LocateByName(repoNames(c), name)
 	switch {
 	case ownerErr == nil && repoErr == nil:
 		on, _ := owner.ResolvedName()
 		rn, _ := repo.ResolvedName()
 		return errs.New(errs.NotFound,
 			"%q is ambiguous; matches owner %q and repo %q — use the full name", name, on, rn)
+	case wsFound && ownerErr == nil:
+		// Nothing stops a workspace from sharing a name with an owner (only
+		// repo names are guarded at creation), so this collision is ordinary —
+		// require the caller to say which they mean.
+		on, _ := owner.ResolvedName()
+		return errs.New(errs.NotFound,
+			"%q is ambiguous; matches owner %q and a workspace — use the full owner name, or `shed workspace rm %s`", name, on, name)
+	case wsFound && repoErr == nil:
+		// Repo and workspace names share one namespace (enforced at creation),
+		// so a healthy library never hits this. If it somehow does — a library
+		// that predates the guards — refuse rather than silently pick one.
+		rn, _ := repo.ResolvedName()
+		return errs.New(errs.Exists,
+			"%q matches both a workspace and the repo %s; rename one (see `shed ls`)", name, rn)
 	case ownerErr == nil:
 		return runOwnerRm(owner, force)
 	case repoErr == nil:
 		return runRepoRmOne(repo, force)
+	case wsFound:
+		return runWorkspaceRm(name, force)
 	default:
-		return repoErr // the repo "not found" message is the friendlier default
+		// Nothing matched. Resolve's ambiguity message ("matches: a, b") is
+		// more helpful than a flat not-found, so keep it when several repos or
+		// owners share the leaf name.
+		if len(repoNamesMatching(c, name)) > 1 {
+			return repoErr
+		}
+		if len(ownerNamesMatching(c, name)) > 1 {
+			return ownerErr
+		}
+		return errs.New(errs.NotFound, "no repo, owner, or workspace named %q (see `shed ls`)", name)
 	}
+}
+
+// ownerNamesMatching returns the resolved names of every tracked owner that
+// the name n selects — the same exact-then-trailing-"/"-segment rule
+// config.ResolveOwner uses. More than one match means n is an ambiguous owner
+// reference. The owner-side sibling of repoNamesMatching.
+func ownerNamesMatching(c *config.Config, n string) []string {
+	var out []string
+	for i := range c.Owners {
+		on, err := c.Owners[i].ResolvedName()
+		if err != nil {
+			continue
+		}
+		if on == n || strings.HasSuffix(on, "/"+n) {
+			out = append(out, on)
+		}
+	}
+	return out
 }
 
 func runRepoRmOne(r *config.Repo, force bool) error {
