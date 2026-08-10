@@ -25,17 +25,23 @@ func TestPrintWelcomeTour(t *testing.T) {
 	// The script must actually walk the flow the tour promises, so a future
 	// edit can't silently drop a step.
 	for _, want := range []string{
-		"shed add octocat/Hello-World", // single repo
-		"shed add octocat",             // whole owner
-		"read-only",                    // store is immutable
-		"shed workspace new octocat/Hello-World tour-feature-a",
-		"shed workspace new octocat/Hello-World tour-feature-b",
-		"git push -u origin tour-feature-a",
-		"isolated", // the isolation payoff
+		"shed add <owner>",          // whole owner (the preferred first add)
+		"shed add <owner>/<repo>",   // single-repo fallback
+		"gh api user --jq .login",   // suggesting their own personal owner
+		"read-only",                 // store is immutable
+		"shed workspace new <owner>/<repo> <change-name>",
+		"git push -u origin <change-name>", // offer to ship the change
+		"pull request",                     // ...as a PR
+		"isolated",                         // the isolation payoff
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("tour script should mention %q", want)
 		}
+	}
+	// The tour works on the user's real repos — a dummy demo repo must never
+	// creep back in.
+	if strings.Contains(out, "octocat") {
+		t.Errorf("tour script should not use a dummy repo (found %q)", "octocat")
 	}
 }
 
