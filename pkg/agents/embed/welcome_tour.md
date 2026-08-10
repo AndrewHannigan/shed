@@ -2,10 +2,11 @@
 
 You are giving the user a short, live tour of `shed`. This document is the
 script. The user is watching, and **this is a conversation, not a lecture** —
-your job is to show three things, one at a time, and check in with the user
-after each one.
+your job is to orient them first, then show three things, one at a time, and
+check in with the user after each one.
 
-There are three short steps and a wrap-up. Don't rush through them.
+There are four short steps (the first is plain talk, no commands) and a
+wrap-up. Don't rush through them.
 
 ## The most important rule: pause and wait
 
@@ -15,6 +16,26 @@ something like *"Make sense? Any questions, or should I keep going?"* — then
 
 If they ask a question, answer it, then ask again whether they're ready to
 continue. The tour only moves forward when the user says so.
+
+## Assume zero context
+
+Treat the user as a **complete newcomer** unless they show otherwise. They may
+not know what shed is, why it's on their machine, or that their coding agents —
+not they themselves — are its main users. Don't lean on a term the tour hasn't
+earned yet: "store", "workspace", and "sync" mean nothing until you've shown
+them.
+
+If at any point the user says they're lost, confused, or asks "what even is
+this?" — **do not repeat your last explanation in different words.** Back up
+and change tactics:
+
+- Ground shed in concrete facts they can see: `which shed` (it's an ordinary
+  CLI installed on their machine), `shed ls` (here's what it's managing right
+  now, including any workspaces past agent sessions created).
+- Re-explain from the **problem** (the mess of agents sharing ad-hoc clones),
+  not from shed's features.
+- Then ask what's still unclear, and only resume the tour when they say
+  they're ready.
 
 ## A few more rules
 
@@ -27,17 +48,43 @@ continue. The tour only moves forward when the user says so.
   so plainly, explain what it would have shown, and continue.
 - **Clean up at the end** and tell the user what you removed.
 
-Open with one or two sentences of framing: shed is a tool for your coding
-agents. It keeps a **read-only store** of your git repos and hands those agents
-**isolated, writable workspaces** to make changes in — so they can share the
-same repos without stepping on each other. Mention it'll take a few minutes and
-they can stop or ask anything at any point. Then begin.
+Open by saying the tour takes a few minutes and they can stop or ask anything
+at any point. Then begin with step 1 — the framing itself is step 1's job.
 
 ---
 
-## Step 1 — A library you can't accidentally break
+## Step 1 — What shed is, and why it exists (no commands yet)
 
-> "First, let's add a repo to the library."
+Start from the problem, in plain language, roughly:
+
+> "When a coding agent works on your code, the default approach is 'clone the
+> repo somewhere and start editing.' That gets messy fast: clones scattered
+> around your disk go stale, an agent leaves one stuck on a half-finished
+> branch, and two agents editing the same clone trample each other's changes."
+
+Then shed's answer, in two parts:
+
+- **A library** — one pristine, always-current, **read-only** copy of each repo
+  you care about, kept under `~/.shed/repos/`. A reference shelf: always safe
+  to read, impossible to scribble on.
+- **Workspaces** — when an agent needs to *change* something, it asks shed for
+  a fresh, writable clone of its own. Each task gets its own; they can't see
+  each other's edits; they're removed when the work lands.
+
+Make one thing explicit, because it surprises newcomers: **shed is a tool for
+your agents more than for you.** Agents open the workspaces and do the editing;
+you mostly just run `shed add` to put a repo on the shelf and `shed ls` to see
+what's there.
+
+Optionally run `shed ls` to ground this in their actual machine — "here's your
+library right now." (An empty library is a fine answer; it leads straight into
+step 2.)
+
+**→ Pause. Ask if that framing makes sense, and wait before continuing.**
+
+## Step 2 — A library you can't accidentally break
+
+> "Let's add a repo to the library."
 
 Run:
 
@@ -46,8 +93,8 @@ shed add octocat/Hello-World
 ```
 
 Then say, briefly:
-- The repo is fetched right away and now lives in a **read-only store** under
-  `~/.shed/repos/…` — a pristine copy that's always there and safe to read.
+- The repo is fetched right away and now lives in the **read-only** library
+  under `~/.shed/repos/…` — a pristine copy that's always there and safe to read.
 
 Now prove it's read-only: find a file in that store (e.g. the `README`) and
 **try to edit it in place** — append a line or `touch` it. It **fails with a
@@ -64,7 +111,7 @@ freely.)
 
 **→ Pause. Ask if they have questions, and wait before continuing.**
 
-## Step 2 — Your first workspace
+## Step 3 — Your first workspace
 
 > "When your agent needs to change something, it asks shed for a workspace: an
 > isolated, writable clone."
@@ -86,7 +133,7 @@ git add -A && git commit -m "Tour edit A"
 
 **→ Pause. Ask if they have questions, and wait before continuing.**
 
-## Step 3 — Two workspaces, no collisions (the payoff)
+## Step 4 — Two workspaces, no collisions (the payoff)
 
 > "Here's the part that matters. Let me open a *second* workspace on the same repo
 > and make a *different* change."
@@ -116,7 +163,8 @@ once without colliding.
 
 ## Wrap-up — recap, what's next, clean up
 
-Recap what the three steps showed, briefly:
+Recap what the tour showed, briefly:
+- **The problem** — agents sharing ad-hoc clones step on each other.
 - **Read-only store** — a pristine baseline that's impossible to clobber.
 - **Isolated workspaces** — your agents edit many things at once, always off the
   latest code, without collisions.
