@@ -39,7 +39,7 @@ func TestOwnerOnlyListShowsOwnersOnly(t *testing.T) {
 }
 
 // With no owners, `shed owner ls` shows the owner-specific hint — even when the
-// library has repos. nothingTrackedHint speaks to an empty library; an empty
+// catalog has repos. nothingTrackedHint speaks to an empty catalog; an empty
 // *owner* list is a different thing.
 func TestOwnerOnlyListEmptyWithRepos(t *testing.T) {
 	repoTestEnv(t)
@@ -85,7 +85,7 @@ func TestOwnerOnlyListJSONOwnersOnly(t *testing.T) {
 	}
 }
 
-// owner add / owner rm change the library, so they are recorded in history just
+// owner add / owner rm change the catalog, so they are recorded in history just
 // like the top-level add / rm; owner ls is read-only and is not.
 func TestOwnerSubcommandsRecorded(t *testing.T) {
 	root := newRootCmd()

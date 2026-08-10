@@ -44,7 +44,7 @@ whose additional_context field is injected into the conversation:
 
 The guide is generated from the running binary, so it is always current —
 there is no on-disk doc to drift after an upgrade. It also appends a live
-snapshot of the library (the "ls" table) so the agent knows which
+snapshot of the catalog (the "ls" table) so the agent knows which
 repos are available without having to run it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -91,7 +91,7 @@ func sessionContextBody() string {
 		body = w + "\n" + body
 	}
 	if list := recentWorkspaceReposText(); list != "" {
-		body += "\nThe repos you've most recently had a workspace in (newest first; run `shed ls` for your full library):\n\n```\n" + list + "```\n"
+		body += "\nThe repos you've most recently had a workspace in (newest first; run `shed ls` for your full catalog):\n\n```\n" + list + "```\n"
 	}
 	return body
 }
@@ -99,7 +99,7 @@ func sessionContextBody() string {
 // syncHealthBanner returns a prominent callout when one or more tracked repos
 // failed their most recent sync, so the agent treats their stored copies as
 // possibly stale rather than asserting on out-of-date code. Best-effort: any
-// failure to read the library yields "" and the body is emitted unchanged.
+// failure to read the catalog yields "" and the body is emitted unchanged.
 func syncHealthBanner() string {
 	c, err := config.Load()
 	if err != nil {
@@ -125,7 +125,7 @@ func syncHealthBanner() string {
 }
 
 // cwdCollisionWarning returns a prominent callout when the agent's current
-// working directory is itself a separate checkout of a library repo (matched
+// working directory is itself a separate checkout of a catalog repo (matched
 // by its git "origin" remote, protocol-independently). This is exactly the
 // situation the guide's "local checkout collision" guardrail describes —
 // surfaced here for the specific repo so the agent can't skip the check.
@@ -155,7 +155,7 @@ func cwdCollisionWarning() string {
 
 // collisionWarning is the pure core of cwdCollisionWarning: if origin (the
 // working directory's git remote) normalizes to the same host/owner/repo
-// identity as one of the library repos, it returns the callout naming that
+// identity as one of the catalog repos, it returns the callout naming that
 // repo; otherwise "". Both sides go through paths.DefaultName so https and
 // ssh URLs for the same repo match.
 func collisionWarning(cwd, origin string, repos []config.Repo) string {
@@ -174,7 +174,7 @@ func collisionWarning(cwd, origin string, repos []config.Repo) string {
 		}
 		return fmt.Sprintf("> ⚠️ HEADS UP — local checkout collision\n"+
 			">\n"+
-			"> Your current working directory `%s` is also library repo `%s`.\n"+
+			"> Your current working directory `%s` is also catalog repo `%s`.\n"+
 			"> They are two independent clones, and a `shed workspace` is kept\n"+
 			"> up to date automatically, so it is the fresher copy. This cwd is the\n"+
 			"> one genuinely ambiguous case, though — you may have been launched here\n"+

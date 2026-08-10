@@ -69,7 +69,7 @@ Start from the problem, in plain language, roughly:
 
 Then shed's answer, in two parts:
 
-- **A library** — one pristine, always-current, **read-only** copy of each repo
+- **A catalog** — one pristine, always-current, **read-only** copy of each repo
   you care about, kept under `~/.shed/repos/`. A reference shelf: always safe
   to read, impossible to scribble on.
 - **Workspaces** — when an agent needs to *change* something, it asks shed for
@@ -82,14 +82,14 @@ you mostly just run `shed add` to put a repo on the shelf and `shed ls` to see
 what's there.
 
 Optionally run `shed ls` to ground this in their actual machine — "here's your
-library right now." (An empty library is a fine answer; it leads straight into
+catalog right now." (An empty catalog is a fine answer; it leads straight into
 step 2.)
 
 **→ Pause. Ask if that framing makes sense, and wait before continuing.**
 
 ## Step 2 — Put your real repos on the shelf
 
-Don't demo on a dummy repo — build the user's actual library, so the tour
+Don't demo on a dummy repo — build the user's actual catalog, so the tour
 leaves them set up rather than just entertained. Ask:
 
 > "Is there a GitHub org or owner you usually work out of? Or, failing that, a
@@ -99,7 +99,7 @@ Guidance for that conversation:
 
 - **Prefer a whole owner (user or org) over a single repo.** `shed add <owner>`
   tracks the owner: it discovers their repos automatically and keeps
-  discovering new ones on every sync — one command, whole library. If the user
+  discovering new ones on every sync — one command, whole catalog. If the user
   works inside an org, that org is the best first add.
 - **Suggest their own personal owner as a starting point.** If `gh` is
   authenticated you can look up their login with `gh api user --jq .login` and
@@ -123,7 +123,7 @@ shed ls
 ```
 
 Say briefly what happened: their repos were fetched into the **read-only**
-library under `~/.shed/repos/…`, and — if an owner was added — sync will pick
+catalog under `~/.shed/repos/…`, and — if an owner was added — sync will pick
 up that owner's new repos automatically from now on.
 
 Now prove the shelf really is read-only, quickly, in one of *their* repos: try
@@ -182,19 +182,19 @@ Then offer to ship it:
 
 Recap what the tour did, briefly — and note that none of it was throwaway:
 - **The problem** — agents sharing ad-hoc clones step on each other.
-- **Their library is live** — their real repos are on the shelf, read-only and
+- **Their catalog is live** — their real repos are on the shelf, read-only and
   kept current automatically.
 - **A real change happened** — made in an isolated workspace, off the latest
   code, and (if they said yes) pushed up as a PR.
 
 Then mention — in a line or two each, no need to run them — where to go next:
-- **Grow the library:** more `shed add`, any time — repos or whole owners.
+- **Grow the catalog:** more `shed add`, any time — repos or whole owners.
 - **Let the agents take it from here:** their coding agents already know about
   shed and will open workspaces themselves when asked to edit these repos.
 - **Tidy up later:** `shed prune` removes workspaces whose work has already
   landed — so once the tour's PR merges, prune cleans it up.
 
-Tidying up is different from a dummy-repo demo: **the library stays** — it *is*
+Tidying up is different from a dummy-repo demo: **the catalog stays** — it *is*
 the setup, that's the point. For the workspace: if a PR went up, suggest
 keeping the workspace until the PR lands (then `shed prune`). If the change
 was never pushed, ask whether they want to keep it or remove it with

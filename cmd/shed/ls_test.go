@@ -36,9 +36,9 @@ func TestCollectRepoListSortsReposByName(t *testing.T) {
 	}
 }
 
-// writeLibrary renders a captioned section per kind of thing shed manages, so a
+// writeCatalog renders a captioned section per kind of thing shed manages, so a
 // newcomer can tell what each table is.
-func TestWriteLibraryCaptionedSections(t *testing.T) {
+func TestWriteCatalogCaptionedSections(t *testing.T) {
 	owners := []ownerRow{{Name: "octocat", RepoCount: 3}}
 	repos := []repoRow{{
 		Name:       "github.com/octocat/Hello-World",
@@ -52,7 +52,7 @@ func TestWriteLibraryCaptionedSections(t *testing.T) {
 	}}
 
 	var buf bytes.Buffer
-	if err := writeLibrary(&buf, owners, repos, workspaces, true); err != nil {
+	if err := writeCatalog(&buf, owners, repos, workspaces, true); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -74,13 +74,13 @@ func TestWriteLibraryCaptionedSections(t *testing.T) {
 
 // The FROM column is hidden when no repo was auto-added by an owner, so the
 // common no-owners case isn't cluttered with a column of em-dashes.
-func TestWriteLibraryHidesSourceColumnWhenUnused(t *testing.T) {
+func TestWriteCatalogHidesSourceColumnWhenUnused(t *testing.T) {
 	repos := []repoRow{{
 		Name:       "github.com/acme/widget",
 		LastSyncAt: time.Now().UTC().Format(time.RFC3339),
 	}}
 	var buf bytes.Buffer
-	if err := writeLibrary(&buf, nil, repos, nil, false); err != nil {
+	if err := writeCatalog(&buf, nil, repos, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -101,11 +101,11 @@ func TestWriteLibraryHidesSourceColumnWhenUnused(t *testing.T) {
 // With repos but no workspaces, the interactive hint (workspaceHint=true) keeps
 // the Workspaces section and explains how to create one; the session-context
 // path (workspaceHint=false) omits it to stay terse.
-func TestWriteLibraryWorkspaceHint(t *testing.T) {
+func TestWriteCatalogWorkspaceHint(t *testing.T) {
 	repos := []repoRow{{Name: "github.com/acme/widget", LastSyncAt: time.Now().UTC().Format(time.RFC3339)}}
 
 	var withHint bytes.Buffer
-	if err := writeLibrary(&withHint, nil, repos, nil, true); err != nil {
+	if err := writeCatalog(&withHint, nil, repos, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(withHint.String(), "Workspaces\n") || !strings.Contains(withHint.String(), "workspace new") {
@@ -113,7 +113,7 @@ func TestWriteLibraryWorkspaceHint(t *testing.T) {
 	}
 
 	var noHint bytes.Buffer
-	if err := writeLibrary(&noHint, nil, repos, nil, false); err != nil {
+	if err := writeCatalog(&noHint, nil, repos, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(noHint.String(), "Workspaces") {
@@ -255,9 +255,9 @@ func TestWriteRecentWorkspaceRepos(t *testing.T) {
 }
 
 // An entirely empty shed shows a single actionable line, not empty headers.
-func TestWriteLibraryEmpty(t *testing.T) {
+func TestWriteCatalogEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeLibrary(&buf, nil, nil, nil, true); err != nil {
+	if err := writeCatalog(&buf, nil, nil, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()

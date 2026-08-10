@@ -33,7 +33,7 @@ func ConfigLockFile() string { return filepath.Join(ConfigDir(), ".lock") }
 // roots init creates that every command depends on: the config file (under
 // ConfigDir) and the data directory. It is a deliberately cheap presence check
 // — two stats, no parsing — so every command can run it on startup to fail with
-// a clear "run shed init" message instead of behaving like an empty library. It
+// a clear "run shed init" message instead of behaving like an empty catalog. It
 // does not validate contents; a malformed config still surfaces its own error
 // when loaded.
 func Initialized() bool {

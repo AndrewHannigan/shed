@@ -9,7 +9,7 @@ import (
 )
 
 // repoTestEnv points config + data dirs at temp dirs so the list reads an
-// isolated library.
+// isolated catalog.
 func repoTestEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -45,7 +45,7 @@ func TestRepoOnlyListShowsReposOnly(t *testing.T) {
 	}
 }
 
-// An empty library shows the same actionable hint top-level `ls` shows, not
+// An empty catalog shows the same actionable hint top-level `ls` shows, not
 // empty headers.
 func TestRepoOnlyListEmpty(t *testing.T) {
 	repoTestEnv(t)
@@ -57,7 +57,7 @@ func TestRepoOnlyListEmpty(t *testing.T) {
 		}
 	})
 	if !strings.Contains(out, "nothing tracked yet") {
-		t.Errorf("empty library should show the hint:\n%s", out)
+		t.Errorf("empty catalog should show the hint:\n%s", out)
 	}
 }
 
@@ -89,7 +89,7 @@ func TestRepoOnlyListJSONReposOnly(t *testing.T) {
 	}
 }
 
-// repo add / repo rm change the library, so they are recorded in history just
+// repo add / repo rm change the catalog, so they are recorded in history just
 // like the top-level add / rm they reuse; repo ls is read-only and is not.
 func TestRepoSubcommandsRecorded(t *testing.T) {
 	root := newRootCmd()

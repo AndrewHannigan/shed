@@ -1,6 +1,6 @@
 # shed
 
-You have a local library of git repos managed by `shed`.
+You have a local catalog of git repos managed by `shed`.
 
 - **Read repos** at `~/.shed/repos/<host>/<owner>/<repo>/` (read-only). A repo may be
   pinned to a branch or tag; those live side by side as `<repo>@<track>` (e.g.
@@ -14,7 +14,7 @@ You have a local library of git repos managed by `shed`.
   and prints its path. It syncs the repo first so workspaces are always up to date
   when created (offline it forks from the last synced state). The workspace is an
   ordinary clone whose origin is the real upstream — commit and push as normal.
-- **Prefer shed repos and workspaces this over any other checkout of the repo you happen to find on disk.** Library
+- **Prefer shed repos and workspaces this over any other checkout of the repo you happen to find on disk.** Catalog
   repos are kept up to date automatically, so a fresh workspace is guaranteed current; a
   stray clone sitting elsewhere on disk — a sibling, or a child of your working directory —
   may be stale.
@@ -23,7 +23,7 @@ You have a local library of git repos managed by `shed`.
   ambiguity: the user may have launched the session right there in order to edit in place.
   Only in that case, STOP and ask which to use.
 - **Clean up**: `shed workspace rm <name>` when done.
-- **Need a repo not in the library?** Ask the user to run `shed add <repo>`
+- **Need a repo not in the catalog?** Ask the user to run `shed add <repo>`
   (a full URL or GitHub `owner/repo` shorthand).
 - **Track a whole user/org?** `shed add <owner>` (a bare `owner` or
   `https://github.com/<owner>`) tracks every repo under that owner; `sync` discovers

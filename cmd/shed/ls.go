@@ -83,7 +83,7 @@ func runRepoList(jsonOut bool) error {
 	}
 	// Interactive `ls` shows the empty-workspaces hint so a newcomer who has
 	// repos but no workspaces yet learns the concept exists and how to create one.
-	return writeLibrary(os.Stdout, owners, rows, workspaces, true)
+	return writeCatalog(os.Stdout, owners, rows, workspaces, true)
 }
 
 // runRepoOnlyList backs `shed repo ls`: the read-only repos only — the
@@ -193,7 +193,7 @@ func collectRepoList(c *config.Config) ([]repoRow, []ownerRow, error) {
 	return rows, owners, nil
 }
 
-// collectWorkspaces returns the workspaces derived from the library's repos,
+// collectWorkspaces returns the workspaces derived from the catalog's repos,
 // with their dirty/unpushed/age state. Unlike collectRepoList this runs git
 // per workspace, but the workspace count is naturally small (one per task in
 // flight, reclaimed by `prune`), so the cost stays bounded.
@@ -211,21 +211,21 @@ func collectWorkspaces(c *config.Config) ([]workspace.Info, error) {
 	return infos, nil
 }
 
-// nothingTrackedHint is shown by the human-readable `ls` views when the library
+// nothingTrackedHint is shown by the human-readable `ls` views when the catalog
 // is empty, pointing a newcomer at the command that fills it.
 const nothingTrackedHint = "(nothing tracked yet — add a repo with `shed add <url>`)"
 
 // noOwnersTrackedHint is shown by `shed owner ls` when no owners are tracked.
-// It is owner-specific: nothingTrackedHint speaks to an empty *library* (no
+// It is owner-specific: nothingTrackedHint speaks to an empty *catalog* (no
 // repos at all), but `shed owner ls` can have repos and still no owners.
 const noOwnersTrackedHint = "(no owners tracked yet — track one with `shed owner add <owner>`)"
 
-// writeLibrary renders the human-readable `ls` overview to out: a captioned
+// writeCatalog renders the human-readable `ls` overview to out: a captioned
 // section per kind of thing shed manages, so a newcomer can tell at a glance
 // what each table is. Sections with no rows are omitted, except that
 // workspaceHint keeps the Workspaces section (with a "how to create one" hint)
 // when there are repos but no workspaces yet — the common first-run state.
-func writeLibrary(out io.Writer, owners []ownerRow, repos []repoRow, workspaces []workspace.Info, workspaceHint bool) error {
+func writeCatalog(out io.Writer, owners []ownerRow, repos []repoRow, workspaces []workspace.Info, workspaceHint bool) error {
 	if len(owners) == 0 && len(repos) == 0 && len(workspaces) == 0 {
 		fmt.Fprintln(out, nothingTrackedHint)
 		return nil
@@ -431,9 +431,9 @@ func writeRecentWorkspaceRepos(out io.Writer, repos []repoActivity) {
 // recentWorkspaceReposText renders, for embedding in session context, the repos
 // the user has most recently had a workspace in: one row per repo, ranked by its
 // newest workspace's age and capped at recentWorkspaceReposLimit. It replaces
-// dumping the whole `ls` library, which a tracked owner can balloon to dozens of
+// dumping the whole `ls` catalog, which a tracked owner can balloon to dozens of
 // repos — the agent can still run `shed ls` for the full picture. Best-effort:
-// returns "" if the library can't be read or no workspace exists yet, so a
+// returns "" if the catalog can't be read or no workspace exists yet, so a
 // config hiccup never breaks session startup and a workspace-less shed simply
 // omits the section.
 func recentWorkspaceReposText() string {

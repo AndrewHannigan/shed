@@ -248,7 +248,7 @@ Shed does not manage credentials. Every git operation defers to whatever `git cl
 ## Documentation
 
 - `shed help` — curated overview of every command
-- `shed help <topic>` — long-form prose docs on a command or concept (topics: `agents`, `auth`, `concepts`, `history`, `init`, `library`, `locking`, `owner`, `path`, `prune`, `sync`, `workspace`)
+- `shed help <topic>` — long-form prose docs on a command or concept (topics: `agents`, `auth`, `catalog`, `concepts`, `history`, `init`, `locking`, `owner`, `path`, `prune`, `sync`, `workspace`)
 - `shed --help` and `shed <cmd> --help` — flag reference
 
 ## License
