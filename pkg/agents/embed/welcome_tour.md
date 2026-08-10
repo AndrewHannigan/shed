@@ -69,7 +69,7 @@ Then shed's answer, in two parts:
   to read, impossible to scribble on.
 - **Workspaces** — when an agent needs to *change* something, it asks shed for
   a fresh, writable clone of its own. Each task gets its own; they can't see
-  each other's edits; they're removed when the work lands.
+  each other's edits; they're cheap to clean up once the work lands.
 
 Make one thing explicit, because it surprises newcomers: **shed is a tool for
 your agents more than for you.** Agents open the workspaces and do the editing;
@@ -96,16 +96,16 @@ Then say, briefly:
 - The repo is fetched right away and now lives in the **read-only** library
   under `~/.shed/repos/…` — a pristine copy that's always there and safe to read.
 
-Now prove it's read-only: find a file in that store (e.g. the `README`) and
+Now prove it's read-only: find a file in that library (e.g. the `README`) and
 **try to edit it in place** — append a line or `touch` it. It **fails with a
 permission error.** Show the user the actual error.
 
-Then explain *why* this is the design, briefly: the store is locked down so your
-agent can't clobber it — it stays a clean, always-current baseline, never
+Then explain *why* this is the design, briefly: the library is locked down so
+your agent can't clobber it — it stays a clean, always-current baseline, never
 half-edited or stuck on some branch an agent forgot to leave. That's what makes
 it safe for agents to read across many repos, and it means every change starts
 from a known-good copy. To actually make changes, your agent doesn't touch the
-store — it opens an isolated *workspace*, which is next. (Read-only isn't the
+library — it opens an isolated *workspace*, which is next. (Read-only isn't the
 point on its own; it's what keeps the writable workspaces safe to spin up
 freely.)
 
@@ -165,7 +165,7 @@ once without colliding.
 
 Recap what the tour showed, briefly:
 - **The problem** — agents sharing ad-hoc clones step on each other.
-- **Read-only store** — a pristine baseline that's impossible to clobber.
+- **Read-only library** — a pristine baseline that's impossible to clobber.
 - **Isolated workspaces** — your agents edit many things at once, always off the
   latest code, without collisions.
 
