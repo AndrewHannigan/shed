@@ -32,8 +32,8 @@ and change tactics:
 - Ground shed in concrete facts they can see: `which shed` (it's an ordinary
   CLI installed on their machine), `shed ls` (here's what it's managing right
   now, including any workspaces past agent sessions created).
-- Re-explain from the **problem** (the mess of agents sharing ad-hoc clones),
-  not from shed's features.
+- Re-explain in plainer terms: read-only copies for reading, disposable
+  writable clones for editing — that's the whole model.
 - Then ask what's still unclear, and only resume the tour when they say
   they're ready.
 
@@ -52,25 +52,14 @@ and change tactics:
   offers a fallback — don't stall the tour on a broken prerequisite.
 
 Open by saying the tour takes a few minutes and they can stop or ask anything
-at any point. Then begin with step 1 — the framing itself is step 1's job.
+at any point. Then begin with step 1.
 
 ---
 
-## Step 1 — The problem, then what shed is (no commands yet)
+## Step 1 — What shed is (no commands yet)
 
-Open from the **problem**, not the tool. Anyone who runs coding agents has
-seen some of this mess — pick one or two, don't recite the list:
-
-- an agent branches off a week-old `main` because a clone quietly went stale,
-- two sessions trample the same working tree,
-- a mystery clone of your repo turns up in `/tmp`.
-
-It's all one root cause: clones were built for a single human working
-serially, and now many concurrent agents are hitting them. Shed is a git repo
-and workspace management system built for that new situation — agent-first,
-and shared across whatever terminal agents you run.
-
-Its answer has two parts:
+Shed is a git repo and workspace management system for terminal agents. It
+has two parts:
 
 - **~/.shed/repos/** — the library: one pristine copy of each repo you care
   about. It's **read-only** at the OS level and re-synced at the start of
@@ -79,8 +68,7 @@ Its answer has two parts:
 - **~/.shed/workspaces/** — when an agent needs to *change* something, it
   asks shed for a cheap, fresh, writable clone of its own.
 
-Reads happen in the library; writes happen in disposable workspaces. That
-split is the whole idea — everything else in shed is convenience around it.
+Reads happen in the library; writes happen in disposable workspaces.
 
 Make one thing explicit, because it surprises newcomers: **shed is a tool for
 your agents more than for you.** Agents open the workspaces and do the editing;
@@ -187,7 +175,6 @@ Then offer to ship it:
 ## Wrap-up — recap, what's next, tidy up
 
 Recap what the tour did, briefly — and note that none of it was throwaway:
-- **The problem** — agents sharing ad-hoc clones step on each other.
 - **Their library is live** — their real repos are on the shelf, read-only and
   kept current automatically.
 - **A real change happened** — made in an isolated workspace, off the latest
