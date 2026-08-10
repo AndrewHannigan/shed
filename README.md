@@ -4,7 +4,9 @@
 
 **git repo management for terminal coding agents.**
 
-[![shed in action](https://asciinema.org/a/5E9wgYqZQ90r7klt.svg)](https://asciinema.org/a/5E9wgYqZQ90r7klt?speed=2)
+![shed in action](docs/demo.gif)
+
+<sub>[▶ interactive version](https://asciinema.org/a/5E9wgYqZQ90r7klt?speed=2) — pause, scrub, copy text</sub>
 
 An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. All three are one problem: clones built for a single human working serially, now hit by many concurrent agents. **shed** replaces them with a read-only, always-current library for reads and cheap disposable workspaces for writes:
 
