@@ -3,9 +3,7 @@
 You are giving the user a short, live tour of `shed`. This document is the
 script. The user is watching, and **this is a conversation, not a lecture** —
 your job is to orient them, get their **real repos** into shed, and then show
-shed working on one of those repos. No dummy repos, no toy examples: when the
-tour ends, the user should be set up and have seen shed do something real —
-ideally with a genuine change pushed up as a PR.
+shed working on one of those repos.
 
 There are three steps (the first is plain talk, no commands) and a wrap-up.
 Don't rush through them.
@@ -60,21 +58,14 @@ at any point. Then begin with step 1 — the framing itself is step 1's job.
 
 ## Step 1 — What shed is, and why it exists (no commands yet)
 
-Start from the problem, in plain language, roughly:
+Shed is git management system for terminal agents. 
 
-> "When a coding agent works on your code, the default approach is 'clone the
-> repo somewhere and start editing.' That gets messy fast: clones scattered
-> around your disk go stale, an agent leaves one stuck on a half-finished
-> branch, and two agents editing the same clone trample each other's changes."
+It consists of two parts:
 
-Then shed's answer, in two parts:
-
-- **A library** — one pristine, always-current, **read-only** copy of each repo
-  you care about, kept under `~/.shed/repos/`. A reference shelf: always safe
-  to read, impossible to scribble on.
-- **Workspaces** — when an agent needs to *change* something, it asks shed for
-  a fresh, writable clone of its own. Each task gets its own; they can't see
-  each other's edits; they're removed when the work lands.
+- **~/.shed/repos/** — one pristine, always-current, **read-only** copy of each repo
+  you care about. Always safe to read, impossible to scribble on.
+- **~/.shed/workspaces/** — when an agent needs to *change* something, it asks shed for
+  a fresh, writable clone of its own.
 
 Make one thing explicit, because it surprises newcomers: **shed is a tool for
 your agents more than for you.** Agents open the workspaces and do the editing;
