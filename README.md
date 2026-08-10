@@ -2,13 +2,15 @@
 
 ![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go) ![Status](https://img.shields.io/badge/status-beta-yellow) ![License](https://img.shields.io/badge/license-MIT-green)
 
-**git repo management for terminal coding agents.**
+**A git repo management system for terminal agents.**
 
 ![shed in action](docs/demo.gif)
 
 <sub>[▶ interactive version](https://asciinema.org/a/5E9wgYqZQ90r7klt?speed=2) — pause, scrub, copy text</sub>
 
-An agent branches off a week-old `main`. Two sessions trample the same working tree. A mystery clone of your repo turns up in `/tmp`. All three are one problem: clones built for a single human working serially, now hit by many concurrent agents. **shed** replaces them with a read-only, always-current library for reads and cheap disposable workspaces for writes:
+**shed** is a complete git repo and workspace management system — agent-first by design, and portable across agent harnesses. Tools like ghq, worktrunk, and vanilla `git worktree` each fill some of the gaps, but none of them add up to a system for agents to manage both git repos and the PR lifecycle.
+
+When you add a repo to shed, it's tracked in the repo catalog at `~/.shed/repos`. The catalog is read-only at the OS level, and the tracked repos are synced at the start of each agent session — so your agent's repo catalog is always fresh and pristine. You can add specific repos (`shed add python/cpython`) or track every repo from a GitHub owner (`shed add python`). Agents read and grep code directly in `~/.shed/repos`, and spin up cheap, writable workspaces on-demand when they need to make changes. All of these operations are managed by your agent, so you no longer manually manage repos and worktrees on its behalf:
 
 ```text
 You:   "Fix the broken link in octocat/Hello-World's README"
@@ -26,7 +28,7 @@ Agent: reads ~/.shed/repos/github.com/octocat/Hello-World   (read-only, always c
 - 🧹 **Cleanup and upkeep in one command** — `shed prune` reclaims workspaces whose work already landed (merged PR or merged into the default branch), never touches unpushed work, and does all git maintenance behind the scenes — you never run `gc`.
 - ⚙️ **Zero agent setup** — one `shed init` wires up each agent to use shed automatically.
 
-Everything is local and boring on purpose: no accounts, no telemetry, no daemon — one binary, a TOML file, and plain git underneath. And if your first reaction is "isn't this just `git worktree`?" — [that question gets a serious answer below](#why-plain-clones-for-workspaces-not-git-worktree).
+Everything is local and boring on purpose: no accounts, no telemetry, no daemon — one Go binary, a TOML file, and plain git underneath. Internally, shed uses worktrees for the read-only catalog but deliberately gives agents plain clones as workspaces — [that design decision gets a serious discussion below](#why-plain-clones-for-workspaces-not-git-worktree).
 
 ---
 
@@ -50,13 +52,17 @@ The script installs a release binary and verifies its checksum against the GitHu
 # integrate with your agents
 shed init
 
-# add a repo (github shorthand works)
-shed add octocat/Hello-World
+# add a repo (github shorthand works)…
+shed add python/cpython
+
+# …or track every repo from a GitHub owner
+shed add python
 
 # optionally pin extra versions — a branch that follows, or a tag frozen in time
 shed add python/cpython --track 3.12
 
-# now run claude, cursor-agent, or opencode — your agent knows how to use it
+# now take the tour — cursor-agent and opencode work too
+echo "show me shed" | claude
 ```
 
 That's it — no per-agent config beyond `shed init`. Your agents now share one consistent system for the repo catalog: they read the read-only copies under `~/.shed/repos/…` and carve off an isolated, up-to-date workspace the moment they need to make changes.
@@ -71,12 +77,14 @@ Need to get back into one? `shed resume <workspace>` relaunches the agent sessio
 created it — in its original working directory — so you can continue the task instead of
 re-explaining it.
 
-> **Who runs what.** `shed add` / `shed rm` curate the library — run them yourself,
+> **Who runs what.** `shed add` / `shed rm` curate the catalog — run them yourself,
 > or let your agent run them when it needs a repo. The `shed workspace` commands are
 > best left to the agent: it creates a workspace the moment it needs to make a change
 > and tears it down when done. You generally don't pre-create workspaces — a stale,
 > hand-made one just risks the agent branching off the wrong base, which is exactly
-> what shed exists to avoid. Set up the library; let the agent manage its own scratch space.
+> what shed exists to avoid. Set up the catalog; let the agent manage its own scratch space.
+
+And if shed isn't for you, uninstalling is just as easy: `shed init --uninstall --purge` reverses the agent integrations and deletes shed's config and data directories.
 
 ---
 
@@ -126,7 +134,7 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 | Command | What it does |
 |---------|--------------|
 | `shed init` | Bootstrap dirs + integrate with detected agents (`--uninstall` reverses it) |
-| `shed add <repo\|owner>` | Add a repo — or a whole user/org — to the library |
+| `shed add <repo\|owner>` | Add a repo — or a whole user/org — to the catalog |
 | `shed rm <name>…` | Remove tracked repos or owners (and their stores/workspaces); a workspace name removes just that workspace |
 | `shed ls` | List owners, repos, and workspaces — everything shed manages |
 | `shed repo ls` | List just the read-only repos (no owners or workspaces) |
@@ -146,13 +154,13 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 | `shed history` | Show recent shed commands |
 | `shed help [topic]` | Long-form docs on a command or concept |
 
-Curate the library yourself (`add`/`rm`/`ls`); leave the `workspace` commands to the agent.
+Curate the catalog yourself (`add`/`rm`/`ls`); leave the `workspace` commands to the agent.
 
 ---
 
 ## Supported agents
 
-`shed init` auto-detects each agent by config-dir presence and (in TTY mode) prompts before writing anything:
+For the moment, shed supports `claude`, `cursor-agent`, and `opencode`, and GitHub is the only git host. `shed init` auto-detects each agent by config-dir presence and (in TTY mode) prompts before writing anything:
 
 | Agent | Config dir | Allowed-dir setting | SessionStart hooks |
 |-------|-----------|---------------------|--------------------|
