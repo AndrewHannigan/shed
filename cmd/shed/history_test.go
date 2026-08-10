@@ -50,7 +50,7 @@ func TestShouldRecord(t *testing.T) {
 // injected into the agent's session context, even when commands are recorded.
 func TestSessionContextBodyExcludesHistory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // empty library: no `ls` snapshot
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // empty catalog: no `ls` snapshot
 	if err := os.MkdirAll(paths.DataDir(), 0755); err != nil {
 		t.Fatal(err)
 	}

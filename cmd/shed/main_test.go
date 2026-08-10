@@ -54,7 +54,7 @@ func TestInitExempt(t *testing.T) {
 }
 
 // A real command run before `shed init` fails fast with a message pointing at
-// `shed init`, instead of silently behaving like an empty library.
+// `shed init`, instead of silently behaving like an empty catalog.
 func TestInitGateBlocksUninitialized(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

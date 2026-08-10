@@ -48,13 +48,14 @@ func runHelp(topic string) error {
 }
 
 // helpAliases lets `shed help <command>` resolve to the topic that documents
-// it, even when several commands share one topic (e.g. add/rm/ls → library).
+// it, even when several commands share one topic (e.g. add/rm/ls → catalog).
 // Without these, `shed help add` would error despite `add` being a real command.
 var helpAliases = map[string]string{
-	"add":       "library",
-	"rm":        "library",
-	"ls":        "library",
-	"repo":      "library",
+	"add":       "catalog",
+	"rm":        "catalog",
+	"ls":        "catalog",
+	"repo":      "catalog",
+	"library":   "catalog",
 	"new":       "workspace",
 	"uninstall": "init",
 	"purge":     "init",
@@ -81,7 +82,7 @@ Getting started:
     # One-time init to teach your agents how to use shed
     shed init
 
-    # Add a repo or a user/org to the library (GitHub short-form allowed)
+    # Add a repo or a user/org to the catalog (GitHub short-form allowed)
     shed add AndrewHannigan/shed       # Add a repo
     shed add octocat                   # Add an owner, auto-sync future repos
 
@@ -90,7 +91,7 @@ Getting started:
 Supports claude, cursor-agent, and opencode.
 
 Commands:
-  add           add a repo (or a whole user/org) to the library
+  add           add a repo (or a whole user/org) to the catalog
   help <topic>  long-form docs (also accepts a command name, e.g. 'shed help add')
   history       show recent shed commands
   init          bootstrap + integrate with detected agents (--uninstall reverses it)
@@ -98,14 +99,14 @@ Commands:
   owner         {ls,add,rm} of tracked users/orgs
   path          print the absolute path of a repo or workspace by name
   prune         delete workspaces whose work has already landed
-  repo          {ls,add,rm} of the read-only repo library
+  repo          {ls,add,rm} of the read-only repo catalog
   resume        reopen the agent session that created a workspace
   rm            remove tracked repos, owners, or workspaces
   status        report sync health; show a repo's error and the likely fix
   sync          fetch each upstream once, refresh the read-only repos (usually automatic)
   workspace     {new,ls,rm} of writable workspaces
 
-Topics: agents, auth, concepts, history, init, library, locking, owner, path, prune, sync, workspace
+Topics: agents, auth, concepts, history, init, catalog, locking, owner, path, prune, sync, workspace
 `,
 
 	"concepts": `Concepts
@@ -114,12 +115,12 @@ You only ever think about two things: repos you read and workspaces
 agents write in. The machinery behind them stays invisible unless you go
 looking.
 
-Library
+Catalog
   The set of repos you've told shed to track. Stored in
   ~/.config/shed/config.toml. Edit via 'shed add/rm/ls'.
 
 Repo
-  A permanent, browsable, read-only checkout of one library entry, kept
+  A permanent, browsable, read-only checkout of one catalog entry, kept
   with its working tree marked read-only (chmod -R a-w). Lives under
   ~/.shed/repos/<host>/<owner>/<repo>[@<track>]/. A repo follows its
   configured 'track': the upstream default branch when unset, or a pinned
@@ -192,10 +193,10 @@ Reversing integration ('shed init --uninstall')
   deleting (and refuses when stdin is not a TTY).
 `,
 
-	"library": `library — manage tracked repos and owners
+	"catalog": `catalog — manage tracked repos and owners
 
   shed add <repo> [--track <ref>] [--name <n>] [--owner|--repo]
-    Add a repo to the library. <repo> may be a full git URL or GitHub
+    Add a repo to the catalog. <repo> may be a full git URL or GitHub
     shorthand: a bare 'owner/repo' or 'owner' is expanded against
     github.com, so 'shed add octocat/Hello-World' works.
     Name defaults to <host>/<owner>/<repo> derived from the URL. --name
@@ -259,14 +260,14 @@ includes the Owners and Workspaces sections.
 
 Add an owner with 'shed add <owner-url>' (a URL with a single
 path segment, e.g. https://github.com/octocat). On every sync,
-shed lists that owner's repos and adds any new ones to the library
+shed lists that owner's repos and adds any new ones to the catalog
 automatically, so repos created upstream after you start tracking are
 picked up and fetched without another 'add'. This also happens in
 the background at each agent session start (see 'shed help sync').
 
 Discovery uses the 'gh' CLI — shed's only dependency beyond 'git',
 and only for discovery. Once a repo has been discovered it is an ordinary
-library entry that syncs with plain 'git'. So if 'gh' is missing or not
+catalog entry that syncs with plain 'git'. So if 'gh' is missing or not
 authenticated, shed degrades gracefully: it warns and skips
 discovery, but already-known repos still sync.
 
@@ -302,7 +303,7 @@ and 'shed owner rm' is 'shed rm' restricted to owners.
   shed sync [<name>...] [--if-older-than <dur>] [--jobs N] [--json]
 
 Before fetching, sync expands any tracked owners in scope: it lists each
-owner's repos via 'gh' and adds new ones to the library, then fetches them
+owner's repos via 'gh' and adds new ones to the catalog, then fetches them
 in the same pass (a brand-new upstream has no mirror, so it is cloned).
 Naming an owner syncs all of its repos. If 'gh' is unavailable, discovery
 is skipped with a warning and already-known repos still sync. See
@@ -471,7 +472,7 @@ need gh), and --dry-run previews its removals too.
     changes how many. --json emits the raw events.
 
 What's recorded
-  Only "working" commands that change the library or workspaces are logged:
+  Only "working" commands that change the catalog or workspaces are logged:
   add, rm, prune, init, and workspace new/rm. Read-only queries (ls,
   status, workspace ls/path), background syncs, and the plain 'sync' command
   are not recorded, and only commands that succeed are. Each entry is the

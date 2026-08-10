@@ -8,7 +8,7 @@
 
 <sub>[▶ interactive version](https://asciinema.org/a/5E9wgYqZQ90r7klt?speed=2) — pause, scrub, copy text</sub>
 
-**shed** gives your agents a read-only, always-current library for reads and cheap disposable workspaces for writes:
+**shed** gives your agents a read-only, always-current catalog for reads and cheap disposable workspaces for writes:
 
 ```text
 You:   "Fix the broken link in octocat/Hello-World's README"
@@ -71,12 +71,12 @@ Need to get back into one? `shed resume <workspace>` relaunches the agent sessio
 created it — in its original working directory — so you can continue the task instead of
 re-explaining it.
 
-> **Who runs what.** `shed add` / `shed rm` curate the library — run them yourself,
+> **Who runs what.** `shed add` / `shed rm` curate the catalog — run them yourself,
 > or let your agent run them when it needs a repo. The `shed workspace` commands are
 > best left to the agent: it creates a workspace the moment it needs to make a change
 > and tears it down when done. You generally don't pre-create workspaces — a stale,
 > hand-made one just risks the agent branching off the wrong base, which is exactly
-> what shed exists to avoid. Set up the library; let the agent manage its own scratch space.
+> what shed exists to avoid. Set up the catalog; let the agent manage its own scratch space.
 
 ---
 
@@ -126,7 +126,7 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 | Command | What it does |
 |---------|--------------|
 | `shed init` | Bootstrap dirs + integrate with detected agents (`--uninstall` reverses it) |
-| `shed add <repo\|owner>` | Add a repo — or a whole user/org — to the library |
+| `shed add <repo\|owner>` | Add a repo — or a whole user/org — to the catalog |
 | `shed rm <name>…` | Remove tracked repos or owners (and their stores/workspaces); a workspace name removes just that workspace |
 | `shed ls` | List owners, repos, and workspaces — everything shed manages |
 | `shed repo ls` | List just the read-only repos (no owners or workspaces) |
@@ -146,7 +146,7 @@ Those arguments are exactly why the *user-facing writable* tier is clones — an
 | `shed history` | Show recent shed commands |
 | `shed help [topic]` | Long-form docs on a command or concept |
 
-Curate the library yourself (`add`/`rm`/`ls`); leave the `workspace` commands to the agent.
+Curate the catalog yourself (`add`/`rm`/`ls`); leave the `workspace` commands to the agent.
 
 ---
 
@@ -240,7 +240,7 @@ Shed does not manage credentials. Every git operation defers to whatever `git cl
 ## Documentation
 
 - `shed help` — curated overview of every command
-- `shed help <topic>` — long-form prose docs on a command or concept (topics: `agents`, `auth`, `concepts`, `history`, `init`, `library`, `locking`, `owner`, `path`, `prune`, `sync`, `workspace`)
+- `shed help <topic>` — long-form prose docs on a command or concept (topics: `agents`, `auth`, `concepts`, `history`, `init`, `catalog`, `locking`, `owner`, `path`, `prune`, `sync`, `workspace`)
 - `shed --help` and `shed <cmd> --help` — flag reference
 
 ## License

@@ -74,7 +74,7 @@ func runWorkspaceNew(name, branch, base string) error {
 	}
 	// Reject an unsafe branch/base up front, before the (network) sync below,
 	// so a traversing or option-looking ref fails fast with a clear message.
-	// workspace.New re-checks as the authoritative library-level guard.
+	// workspace.New re-checks as the authoritative catalog-level guard.
 	if err := paths.ValidateBranch(branch); err != nil {
 		return errs.Wrap(errs.Config, err)
 	}

@@ -120,7 +120,7 @@ func TestRunPathNotFound(t *testing.T) {
 }
 
 // The namespace guards keep a name from being both a repo and a workspace, but a
-// library that predates them could. path refuses such a name rather than
+// catalog that predates them could. path refuses such a name rather than
 // guessing.
 func TestRunPathAmbiguousBoth(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

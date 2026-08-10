@@ -26,8 +26,8 @@ func newAddCmd() *cobra.Command {
 	var asOwner, asRepo bool
 	cmd := &cobra.Command{
 		Use:   "add <repo>",
-		Short: "Add a repository, or a whole user/org, to the library",
-		Long: `add appends a repo to the library. <repo> may be a full git URL
+		Short: "Add a repository, or a whole user/org, to the catalog",
+		Long: `add appends a repo to the catalog. <repo> may be a full git URL
 (https://, ssh://, or scp-style git@host:owner/repo) or GitHub shorthand:
 a bare "owner/repo" or "owner" is expanded against github.com, so
 "shed add octocat/Hello-World" and "shed add octocat"

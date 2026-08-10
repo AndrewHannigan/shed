@@ -150,7 +150,7 @@ func runRepoRm(name string, force bool) error {
 			"%q is ambiguous; matches owner %q and a workspace — use the full owner name, or `shed workspace rm %s`", name, on, name)
 	case wsFound && repoErr == nil:
 		// Repo and workspace names share one namespace (enforced at creation),
-		// so a healthy library never hits this. If it somehow does — a library
+		// so a healthy catalog never hits this. If it somehow does — a catalog
 		// that predates the guards — refuse rather than silently pick one.
 		rn, _ := repo.ResolvedName()
 		return errs.New(errs.Exists,

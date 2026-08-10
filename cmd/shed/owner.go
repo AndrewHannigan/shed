@@ -13,7 +13,7 @@ import (
 // newOwnerCmd groups the owner-management commands under an `owner` noun,
 // mirroring the `repo` and `workspace` groups. A tracked owner is a whole
 // GitHub user or org whose repos each sync discovers and auto-adds to the
-// library.
+// catalog.
 //
 // Unlike the `repo` group — where `repo add`/`repo rm` reuse the auto-detecting
 // top-level commands verbatim — the owner forms commit to the owner reading:
@@ -40,9 +40,9 @@ func newOwnerLsCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "ls",
-		Short: "List the tracked users/orgs in your library",
+		Short: "List the tracked users/orgs in your catalog",
 		Long: `ls lists the owners you track — whole GitHub users or orgs whose
-repos sync discovers and adds to the library automatically — with how many
+repos sync discovers and adds to the catalog automatically — with how many
 repos each currently manages.
 
 Unlike 'shed ls', this shows only the owners: no repos, no workspaces. Run
@@ -67,7 +67,7 @@ checked against GitHub first so a typo can't become a dead entry that syncs
 nothing.
 
 On every sync, shed lists the owner's repos via gh and adds any new ones to
-the library automatically. This is the same as 'shed add --owner <owner>';
+the catalog automatically. This is the same as 'shed add --owner <owner>';
 under the 'owner' noun the owner reading is forced, so even an "owner/repo"
 shaped argument is tracked as an owner rather than a single repo. See
 'shed help owner'.`,
