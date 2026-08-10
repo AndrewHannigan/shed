@@ -7,8 +7,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
+
+// collectRepoList orders repos alphabetically by name, not by config order
+// (which reflects when each repo was added).
+func TestCollectRepoListSortsReposByName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	c := &config.Config{Repos: []config.Repo{
+		{URL: "https://github.com/zed/zulu", Name: "github.com/zed/zulu"},
+		{URL: "https://github.com/acme/widget", Name: "github.com/acme/widget"},
+		{URL: "https://github.com/mid/mango", Name: "github.com/mid/mango"},
+	}}
+	rows, _, err := collectRepoList(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"github.com/acme/widget", "github.com/mid/mango", "github.com/zed/zulu"}
+	if len(rows) != len(want) {
+		t.Fatalf("want %d rows, got %d: %+v", len(want), len(rows), rows)
+	}
+	for i, name := range want {
+		if rows[i].Name != name {
+			t.Errorf("position %d = %q, want %q", i, rows[i].Name, name)
+		}
+	}
+}
 
 // writeLibrary renders a captioned section per kind of thing shed manages, so a
 // newcomer can tell what each table is.

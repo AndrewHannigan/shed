@@ -179,6 +179,9 @@ func collectRepoList(c *config.Config) ([]repoRow, []ownerRow, error) {
 		}
 		rows = append(rows, row)
 	}
+	// Config order reflects when repos were added (and owner-synced repos land
+	// wherever sync appended them); alphabetical order is what a reader scans by.
+	sort.Slice(rows, func(a, b int) bool { return rows[a].Name < rows[b].Name })
 	owners := make([]ownerRow, 0, len(c.Owners))
 	for _, o := range c.Owners {
 		name, err := o.ResolvedName()
