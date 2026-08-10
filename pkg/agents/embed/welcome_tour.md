@@ -56,16 +56,31 @@ at any point. Then begin with step 1 — the framing itself is step 1's job.
 
 ---
 
-## Step 1 — What shed is, and why it exists (no commands yet)
+## Step 1 — The problem, then what shed is (no commands yet)
 
-Shed is git management system for terminal agents. 
+Open from the **problem**, not the tool. Anyone who runs coding agents has
+seen some of this mess — pick one or two, don't recite the list:
 
-It consists of two parts:
+- an agent branches off a week-old `main` because a clone quietly went stale,
+- two sessions trample the same working tree,
+- a mystery clone of your repo turns up in `/tmp`.
 
-- **~/.shed/repos/** — one pristine, always-current, **read-only** copy of each repo
-  you care about. Always safe to read, impossible to scribble on.
-- **~/.shed/workspaces/** — when an agent needs to *change* something, it asks shed for
-  a fresh, writable clone of its own.
+It's all one root cause: clones were built for a single human working
+serially, and now many concurrent agents are hitting them. Shed is a git repo
+and workspace management system built for that new situation — agent-first,
+and shared across whatever terminal agents you run.
+
+Its answer has two parts:
+
+- **~/.shed/repos/** — the library: one pristine copy of each repo you care
+  about. It's **read-only** at the OS level and re-synced at the start of
+  every agent session — always current, impossible to scribble on. Agents
+  read and grep code directly here.
+- **~/.shed/workspaces/** — when an agent needs to *change* something, it
+  asks shed for a cheap, fresh, writable clone of its own.
+
+Reads happen in the library; writes happen in disposable workspaces. That
+split is the whole idea — everything else in shed is convenience around it.
 
 Make one thing explicit, because it surprises newcomers: **shed is a tool for
 your agents more than for you.** Agents open the workspaces and do the editing;
