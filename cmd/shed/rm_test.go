@@ -3,10 +3,12 @@ package main
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
+	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
 
 // rmTestEnv points config + data dirs at temp dirs so rm can mutate them, and
@@ -207,6 +209,79 @@ func TestRepoRmManyContinuesPastFailure(t *testing.T) {
 	c := loadConfig(t)
 	if len(c.Repos) != 0 {
 		t.Fatalf("the resolvable repos should still be removed, got %+v", c.Repos)
+	}
+}
+
+// A name that matches neither a repo nor an owner but does name a workspace
+// removes just that workspace — `shed rm <ws>` is `shed workspace rm <ws>`.
+func TestRmRemovesWorkspaceByName(t *testing.T) {
+	rmTestEnv(t)
+	saveConfig(t, &config.Config{
+		Repos: []config.Repo{{URL: "https://github.com/acme/widget"}},
+	})
+	const repo = "github.com/acme/widget"
+	makeWorkspaceDir(t, repo, "fix-thing")
+
+	// --force skips the clean check (the bare dir isn't a real git repo).
+	captureStdout(t, func() {
+		if err := runRepoRm("fix-thing", true); err != nil {
+			t.Fatalf("runRepoRm(fix-thing) = %v, want nil", err)
+		}
+	})
+	if workspace.Exists(repo, "fix-thing") {
+		t.Errorf("workspace fix-thing should be removed")
+	}
+	c := loadConfig(t)
+	if len(c.Repos) != 1 {
+		t.Fatalf("the repo should survive a workspace removal, got %+v", c.Repos)
+	}
+}
+
+// A workspace may share a name with an owner (only repo names are guarded at
+// creation); rm refuses to guess and removes nothing.
+func TestRmWorkspaceOwnerAmbiguous(t *testing.T) {
+	rmTestEnv(t)
+	saveConfig(t, &config.Config{
+		Repos:  []config.Repo{{URL: "https://github.com/acme/widget", Source: "github.com/acme"}},
+		Owners: []config.Owner{{URL: "https://github.com/acme"}},
+	})
+	const repo = "github.com/acme/widget"
+	makeWorkspaceDir(t, repo, "acme")
+
+	err := runRepoRm("acme", false)
+	if err == nil {
+		t.Fatalf("expected an ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("error should call out the ambiguity, got: %v", err)
+	}
+	if !workspace.Exists(repo, "acme") {
+		t.Errorf("workspace should survive an ambiguous rm")
+	}
+	c := loadConfig(t)
+	if len(c.Owners) != 1 {
+		t.Errorf("owner should survive an ambiguous rm, got %+v", c.Owners)
+	}
+}
+
+// A name matching nothing reports all three kinds rm can remove, so a
+// workspace typo doesn't read as "repo not in the config".
+func TestRmNotFoundMentionsWorkspaces(t *testing.T) {
+	rmTestEnv(t)
+	saveConfig(t, &config.Config{
+		Repos: []config.Repo{{URL: "https://github.com/acme/widget"}},
+	})
+
+	err := runRepoRm("nope", false)
+	if err == nil {
+		t.Fatalf("expected a not-found error")
+	}
+	var coded *errs.Coded
+	if !errors.As(err, &coded) || coded.Code != errs.NotFound {
+		t.Fatalf("runRepoRm(nope) = %v, want errs.NotFound", err)
+	}
+	if !strings.Contains(err.Error(), "no repo, owner, or workspace") {
+		t.Fatalf("not-found should mention repos, owners, and workspaces, got: %v", err)
 	}
 }
 

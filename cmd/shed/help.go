@@ -100,7 +100,7 @@ Commands:
   prune         delete workspaces whose work has already landed
   repo          {ls,add,rm} of the read-only repo library
   resume        reopen the agent session that created a workspace
-  rm            remove tracked repos or owners
+  rm            remove tracked repos, owners, or workspaces
   status        report sync health; show a repo's error and the likely fix
   sync          fetch each upstream once, refresh the read-only repos (usually automatic)
   workspace     {new,ls,rm} of writable workspaces
@@ -226,6 +226,10 @@ Reversing integration ('shed init --uninstall')
     auto-added, along with their workspaces and stores — again asking for
     confirmation first. Answering no keeps the repos: they stay on disk,
     just untied from the owner (so a later sync no longer manages them).
+
+    If <name> matches neither but does name a workspace, removes just that
+    workspace — the same as 'shed workspace rm <name>' (refuses if it has
+    uncommitted or unpushed work unless --force).
 
     Several names may be given at once ('shed rm a b c'); each is removed
     independently, so a failure on one is reported but doesn't stop the rest.
