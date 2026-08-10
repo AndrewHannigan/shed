@@ -34,8 +34,7 @@ Everything is local and boring on purpose: no accounts, no telemetry, no daemon 
 
 ```bash
 # macOS (Homebrew)
-brew trust --tap AndrewHannigan/tap
-brew install AndrewHannigan/tap/shed
+brew trust --tap AndrewHannigan/tap && brew install AndrewHannigan/tap/shed
 
 # Linux / other Unix
 curl -fsSL https://raw.githubusercontent.com/AndrewHannigan/shed/main/install.sh | sh
