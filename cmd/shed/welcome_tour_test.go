@@ -25,10 +25,10 @@ func TestPrintWelcomeTour(t *testing.T) {
 	// The script must actually walk the flow the tour promises, so a future
 	// edit can't silently drop a step.
 	for _, want := range []string{
-		"shed add <owner>",          // whole owner (the preferred first add)
-		"shed add <owner>/<repo>",   // single-repo fallback
-		"gh api user --jq .login",   // suggesting their own personal owner
-		"read-only",                 // store is immutable
+		"shed add <owner>",        // whole owner (the preferred first add)
+		"shed add <owner>/<repo>", // single-repo fallback
+		"gh api user --jq .login", // suggesting their own personal owner
+		"read-only",               // store is immutable
 		"shed workspace new <owner>/<repo> <change-name>",
 		"git push -u origin <change-name>", // offer to ship the change
 		"pull request",                     // ...as a PR
