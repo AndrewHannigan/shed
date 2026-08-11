@@ -26,9 +26,9 @@ func TestPrintWelcomeTour(t *testing.T) {
 	// edit can't silently drop a step.
 	for _, want := range []string{
 		"AskUserQuestion",                      // checkpoint pacing
-		"Run the shed add command",             // step 1
+		"Run the `shed add` command",          // step 1
 		"psf/requests",                         // single-repo example
-		"readonly",                             // catalog is immutable
+		"read-only",                            // catalog is immutable
 		"shed workspace new",                   // agent-driven workspaces
 		"second workspace",                     // multiple workspaces demo
 		"Don't open a PR",                      // explain, don't ship
