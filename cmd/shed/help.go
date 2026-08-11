@@ -397,10 +397,13 @@ repo's checkout (objects hardlink from the shared mirror, so creation is
 fast and never blocked by the network) whose origin points at the real
 upstream. Edits happen here.
 
-  shed workspace new <repo> <name> [--base <branch|tag>]
+  shed workspace new <repo> <name> [--base <branch|tag>] [--no-sync]
     Always attempts a sync first so the workspace forks from the freshest
     code; if that fails (offline, auth, upstream down), it warns and forks
-    from the last synced state — creation itself is purely local. If <name>
+    from the last synced state — creation itself is purely local. --no-sync
+    skips the refresh entirely and forks straight from the last synced
+    state: faster, but the workspace may be behind upstream (errors if the
+    repo has never been synced). If <name>
     exists as an upstream branch, check it out (any upstream branch works,
     fetched straight from the local mirror). Otherwise create it off
     <base>, defaulting to the repo's tracked branch or tag — a workspace

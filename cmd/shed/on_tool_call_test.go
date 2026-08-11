@@ -21,6 +21,7 @@ func TestParseWorkspaceNewName(t *testing.T) {
 		{"ws alias", "shed ws new foo fix-bug", "fix-bug", true},
 		{"with base flag", "shed workspace new foo feat --base main", "feat", true},
 		{"base flag between args", "shed workspace new foo --base main feat", "feat", true},
+		{"no-sync flag between args", "shed workspace new foo --no-sync feat", "feat", true},
 		{"shell wrapped", "cd /tmp && FOO=1 shed ws new foo task-1", "task-1", true},
 		{"abs path binary", "/usr/local/bin/shed workspace new foo task-2", "task-2", true},
 		{"nested branch name", "shed workspace new foo feature/x", "feature/x", true},

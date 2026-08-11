@@ -246,7 +246,7 @@ func TestRunWorkspaceNewRejectsRepoNameCollision(t *testing.T) {
 
 	// Make a workspace named "projects" under the shed repo; "projects" also
 	// resolves to the projects repo, so the guard must reject it.
-	err := runWorkspaceNew("shed", "projects", "")
+	err := runWorkspaceNew("shed", "projects", "", false)
 	var c *errs.Coded
 	if !errors.As(err, &c) || c.Code != errs.Exists {
 		t.Fatalf("runWorkspaceNew(shed, projects) = %v, want errs.Exists collision", err)
