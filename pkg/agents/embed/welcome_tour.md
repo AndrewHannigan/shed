@@ -1,5 +1,7 @@
 Provide a tour of shed.
 
+Explain up front that shed is a tool that helps agents manage git repos and workspaces. Mention that you can see usage instructions already in your session context, which means the user has already run `shed init` (if you can't see this then flag to the user). 
+
 1. Start with adding a repo. Ask the user if they'd like to track a GitHub owner (such as themselves, recommended if they have at least one repo on their GitHub) or a specific repo (e.g. psf/requests, recommended if the user has no repos on their GitHub). Run the `shed add` command.
 2. Attempt to edit it to show that it is read-only. The reason it is read-only is so the repo catalog is fresh and pristine. The code is always up to date and can't be clobbered.
 3. Then create a workspace and continue demoing how you use shed.
@@ -22,3 +24,5 @@ At the end, also mention that, in practice, shed interactions will be more backg
 
 Emphasize that `shed workspace new` is typically run by the agent, not the
 user.
+
+Always call it the read-only catalog, not read-only mirror.
