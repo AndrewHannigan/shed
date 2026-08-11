@@ -2,7 +2,7 @@
 
 ![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go) ![Status](https://img.shields.io/badge/status-beta-yellow) ![License](https://img.shields.io/badge/license-MIT-green)
 
-**Git repo and workspace management for terminal coding agents.**
+**git repo management for terminal coding agents**
 
 ![shed in action](docs/demo.gif)
 
@@ -17,10 +17,10 @@ Agent: reads ~/.shed/repos/github.com/octocat/Hello-World   (read-only, current)
 
 Agents run all of this themselves. `shed init` wires up the integration once; after that you stop managing repos and worktrees on your agents' behalf.
 
-- Works the same across Claude Code, Cursor CLI, and opencode. Parallel sessions in the same repo don't collide — each task gets its own workspace.
+- Works the same across Claude Code, Cursor CLI, and opencode. Parallel sessions in the same repo don't collide - each task gets its own workspace.
 - Repos sync in the background at session start and again right before each workspace is created, so an agent never branches off stale code by accident.
 - `shed workspace new` is purely local (objects hardlink from a shared per-upstream mirror), so creation takes seconds and works offline. The result is an ordinary git repo with `origin` pointing at the real upstream; push as if you'd cloned it from there.
-- `shed prune` deletes workspaces whose work already landed (merged PR, or merged into the default branch), refuses dirty or unpushed work, and does all git maintenance. You never run `gc`.
+- `shed prune` deletes workspaces whose work already landed (merged PR, or merged into the default branch), refuses dirty or unpushed work.
 - Track several versions of one repo: `cpython`, `cpython@3.12`, and `cpython@v3.12.3` sit side by side and share one mirror.
 
 ## Install
@@ -51,31 +51,9 @@ shed add python/cpython --track 3.12
 # now run claude, cursor-agent, or opencode — your agent knows how to use it
 ```
 
-Division of labor: you (or your agent) curate the catalog with `shed add` / `shed rm`. The `workspace` commands are best left to the agent — it creates a workspace the moment it needs to make a change and tears it down when done. Pre-creating workspaces by hand just risks the agent branching off a stale base, which is what shed exists to prevent.
+Division of labor: you (or your agent) curate the catalog with `shed add` / `shed rm`. The `workspace` commands are best left to the agent — it creates a workspace the moment it needs to make a change and tears it down when done.
 
-When branches land, `shed prune` reclaims the workspaces they leave behind.
-
-## How it works
-
-The obvious alternative — keep a normal clone of each repo and let agents work in it — breaks as soon as more than one thing is going on:
-
-- One clone has one working tree and one `HEAD`. Two agents, or one agent on two tasks, can't share it without stashing, branch-switching, and clobbering each other.
-- The clone stops being trustworthy. It ends up parked on some branch an agent forgot to leave, carrying stray uncommitted changes, so reads don't reflect upstream and new branches fork from the wrong base.
-
-Shed splits the two roles: a read-only reference per repo, and N disposable workspaces. Reads always hit real upstream code; writes get isolated trees that are safe to throw away. Underneath both sits a fetch-only mirror, with one invariant dividing the tiers: **only shed writes to mirrors and repos; agents only write to workspaces.**
-
-| Tier | What it is | Writable by | Lifetime |
-|---|---|---|---|
-| **mirror** (`.internal/mirrors/…`) | fetch-only repo, tree never checked out | shed (network fetch) | permanent, one per upstream |
-| **repo** (`repos/…`) | worktree of the mirror on its tracked branch (or detached at a tag) | shed (fast-forward on sync) | permanent, N per mirror |
-| **workspace** (`workspaces/…`) | plain local clone off a repo, origin → the real upstream | agents | disposable |
-
-Consequences of this shape:
-
-- Fetches can't be blocked. The mirror fetches into `refs/remotes/origin/*`, a namespace no checkout can occupy, so nothing an agent does inside a repo checkout can fail the shared fetch. Damage is contained to that checkout, which repairs itself on the next sync.
-- Repos sit on real branches: `git status` says `On branch 3.12`, not a detached hash. Sync is a fast-forward; a force-pushed upstream is detected, reported, then reset.
-- Workspaces are ordinary clones: `git clone <repo> && git remote set-url origin <upstream>`, with objects hardlinked from the mirror. Creation is local-disk fast, and the result behaves exactly like a clone of GitHub.
-- Background operations can't lose agent work. Sync writes only to shed-owned tiers; a mirror `gc` can never prune objects a repo or workspace needs (every checkout is a reachability root); workspace deletion happens only in explicit `shed prune` or `workspace rm`, which refuse dirty or unpushed work without `--force`.
+When PRs are merged, `shed prune` reclaims the workspaces they leave behind.
 
 ## Why plain clones for workspaces, not `git worktree`
 
