@@ -72,7 +72,7 @@ Reads happen in the catalog; writes happen in disposable workspaces.
 
 Make one thing explicit, because it surprises newcomers: **shed is a tool for
 your agents more than for you.** Agents open the workspaces and do the editing;
-you mostly just run `shed add` to put a repo on the shelf and `shed ls` to see
+you mostly just run `shed add` to put a repo in the catalog and `shed ls` to see
 what's there.
 
 Optionally run `shed ls` to ground this in their actual machine — "here's your
@@ -81,7 +81,7 @@ step 2.)
 
 **→ Pause. Ask if that framing makes sense, and wait before continuing.**
 
-## Step 2 — Put your real repos on the shelf
+## Step 2 — Put your real repos in the catalog
 
 Don't demo on a dummy repo — build the user's actual catalog, so the tour
 leaves them set up rather than just entertained. Ask:
@@ -97,8 +97,8 @@ Guidance for that conversation:
   works inside an org, that org is the best first add.
 - **Suggest their own personal owner as a starting point.** If `gh` is
   authenticated you can look up their login with `gh api user --jq .login` and
-  offer it: "want me to add `<login>`, so your personal repos are all on the
-  shelf?"
+  offer it: "want me to add `<login>`, so your personal repos are all in the
+  catalog?"
 - **A single repo is a fine fallback.** If they'd rather start small — or owner
   tracking isn't possible right now (it needs `gh` installed and
   authenticated) — add individual repos instead: `shed add <owner>/<repo>`.
@@ -120,7 +120,7 @@ Say briefly what happened: their repos were fetched into the **read-only**
 catalog under `~/.shed/repos/…`, and — if an owner was added — sync will pick
 up that owner's new repos automatically from now on.
 
-Now prove the shelf really is read-only, quickly, in one of *their* repos: try
+Now prove the catalog really is read-only, quickly, in one of *their* repos: try
 to `touch` or append to a file under `~/.shed/repos/…`. It **fails with a
 permission error** — show the user the actual error. One or two sentences on
 why: the store stays a pristine, always-current baseline that no agent can
@@ -175,7 +175,7 @@ Then offer to ship it:
 ## Wrap-up — recap, what's next, tidy up
 
 Recap what the tour did, briefly — and note that none of it was throwaway:
-- **Their catalog is live** — their real repos are on the shelf, read-only and
+- **Their catalog is live** — their real repos are in it, read-only and
   kept current automatically.
 - **A real change happened** — made in an isolated workspace, off the latest
   code, and (if they said yes) pushed up as a PR.
