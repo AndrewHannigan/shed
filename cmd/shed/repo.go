@@ -4,8 +4,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newRepoCmd groups the library-management commands under a `repo` noun,
-// mirroring the `workspace` group. The repo library is the read-only side of the
+// newRepoCmd groups the catalog-management commands under a `repo` noun,
+// mirroring the `workspace` group. The repo catalog is the read-only side of the
 // shed: the tracked repos (and owners) your agents read from.
 //
 // `repo add` and `repo rm` are the same commands as top-level `shed add` /
@@ -17,7 +17,7 @@ func newRepoCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "repo",
 		Aliases: []string{"repos", "r"},
-		Short:   "Manage the read-only repo library (list, add, remove tracked repos)",
+		Short:   "Manage the read-only repo catalog (list, add, remove tracked repos)",
 	}
 	cmd.AddCommand(
 		newRepoLsCmd(),
@@ -33,8 +33,8 @@ func newRepoLsCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "ls",
-		Short: "List the read-only repos in your library",
-		Long: `ls lists the read-only repos in your library — the reference copies
+		Short: "List the read-only repos in your catalog",
+		Long: `ls lists the read-only repos in your catalog — the reference copies
 your agents read from — with each repo's last-sync time.
 
 Unlike 'shed ls', this shows only the repos: no owners, no workspaces. Run

@@ -32,8 +32,8 @@ and change tactics:
 - Ground shed in concrete facts they can see: `which shed` (it's an ordinary
   CLI installed on their machine), `shed ls` (here's what it's managing right
   now, including any workspaces past agent sessions created).
-- Re-explain from the **problem** (the mess of agents sharing ad-hoc clones),
-  not from shed's features.
+- Re-explain in plainer terms: read-only copies for reading, disposable
+  writable clones for editing — that's the whole model.
 - Then ask what's still unclear, and only resume the tour when they say
   they're ready.
 
@@ -52,35 +52,38 @@ and change tactics:
   offers a fallback — don't stall the tour on a broken prerequisite.
 
 Open by saying the tour takes a few minutes and they can stop or ask anything
-at any point. Then begin with step 1 — the framing itself is step 1's job.
+at any point. Then begin with step 1.
 
 ---
 
-## Step 1 — What shed is, and why it exists (no commands yet)
+## Step 1 — What shed is (no commands yet)
 
-Shed is git management system for terminal agents. 
+Shed is a git repo and workspace management system for terminal agents. It
+has two parts:
 
-It consists of two parts:
+- **~/.shed/repos/** — the catalog: one pristine copy of each repo you care
+  about. It's **read-only** at the OS level and re-synced at the start of
+  every agent session — always current, impossible to scribble on. Agents
+  read and grep code directly here.
+- **~/.shed/workspaces/** — when an agent needs to *change* something, it
+  asks shed for a cheap, fresh, writable clone of its own.
 
-- **~/.shed/repos/** — one pristine, always-current, **read-only** copy of each repo
-  you care about. Always safe to read, impossible to scribble on.
-- **~/.shed/workspaces/** — when an agent needs to *change* something, it asks shed for
-  a fresh, writable clone of its own.
+Reads happen in the catalog; writes happen in disposable workspaces.
 
 Make one thing explicit, because it surprises newcomers: **shed is a tool for
 your agents more than for you.** Agents open the workspaces and do the editing;
-you mostly just run `shed add` to put a repo on the shelf and `shed ls` to see
+you mostly just run `shed add` to put a repo in the catalog and `shed ls` to see
 what's there.
 
 Optionally run `shed ls` to ground this in their actual machine — "here's your
-library right now." (An empty library is a fine answer; it leads straight into
+catalog right now." (An empty catalog is a fine answer; it leads straight into
 step 2.)
 
 **→ Pause. Ask if that framing makes sense, and wait before continuing.**
 
-## Step 2 — Put your real repos on the shelf
+## Step 2 — Put your real repos in the catalog
 
-Don't demo on a dummy repo — build the user's actual library, so the tour
+Don't demo on a dummy repo — build the user's actual catalog, so the tour
 leaves them set up rather than just entertained. Ask:
 
 > "Is there a GitHub org or owner you usually work out of? Or, failing that, a
@@ -90,12 +93,12 @@ Guidance for that conversation:
 
 - **Prefer a whole owner (user or org) over a single repo.** `shed add <owner>`
   tracks the owner: it discovers their repos automatically and keeps
-  discovering new ones on every sync — one command, whole library. If the user
+  discovering new ones on every sync — one command, whole catalog. If the user
   works inside an org, that org is the best first add.
 - **Suggest their own personal owner as a starting point.** If `gh` is
   authenticated you can look up their login with `gh api user --jq .login` and
-  offer it: "want me to add `<login>`, so your personal repos are all on the
-  shelf?"
+  offer it: "want me to add `<login>`, so your personal repos are all in the
+  catalog?"
 - **A single repo is a fine fallback.** If they'd rather start small — or owner
   tracking isn't possible right now (it needs `gh` installed and
   authenticated) — add individual repos instead: `shed add <owner>/<repo>`.
@@ -114,10 +117,10 @@ shed ls
 ```
 
 Say briefly what happened: their repos were fetched into the **read-only**
-library under `~/.shed/repos/…`, and — if an owner was added — sync will pick
+catalog under `~/.shed/repos/…`, and — if an owner was added — sync will pick
 up that owner's new repos automatically from now on.
 
-Now prove the shelf really is read-only, quickly, in one of *their* repos: try
+Now prove the catalog really is read-only, quickly, in one of *their* repos: try
 to `touch` or append to a file under `~/.shed/repos/…`. It **fails with a
 permission error** — show the user the actual error. One or two sentences on
 why: the store stays a pristine, always-current baseline that no agent can
@@ -172,20 +175,19 @@ Then offer to ship it:
 ## Wrap-up — recap, what's next, tidy up
 
 Recap what the tour did, briefly — and note that none of it was throwaway:
-- **The problem** — agents sharing ad-hoc clones step on each other.
-- **Their library is live** — their real repos are on the shelf, read-only and
+- **Their catalog is live** — their real repos are in it, read-only and
   kept current automatically.
 - **A real change happened** — made in an isolated workspace, off the latest
   code, and (if they said yes) pushed up as a PR.
 
 Then mention — in a line or two each, no need to run them — where to go next:
-- **Grow the library:** more `shed add`, any time — repos or whole owners.
+- **Grow the catalog:** more `shed add`, any time — repos or whole owners.
 - **Let the agents take it from here:** their coding agents already know about
   shed and will open workspaces themselves when asked to edit these repos.
 - **Tidy up later:** `shed prune` removes workspaces whose work has already
   landed — so once the tour's PR merges, prune cleans it up.
 
-Tidying up is different from a dummy-repo demo: **the library stays** — it *is*
+Tidying up is different from a dummy-repo demo: **the catalog stays** — it *is*
 the setup, that's the point. For the workspace: if a PR went up, suggest
 keeping the workspace until the PR lands (then `shed prune`). If the change
 was never pushed, ask whether they want to keep it or remove it with

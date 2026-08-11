@@ -53,8 +53,8 @@ func runPath(name string) error {
 	repoMatches := repoNamesMatching(c, name)
 
 	// Repo and workspace names share one namespace (enforced at creation by the
-	// guards in `add` and `workspace new`), so a healthy library has at most one
-	// match. If somehow both match — a library that predates the guards — refuse
+	// guards in `add` and `workspace new`), so a healthy catalog has at most one
+	// match. If somehow both match — a catalog that predates the guards — refuse
 	// rather than silently pick one.
 	if wsFound && len(repoMatches) > 0 {
 		return errs.New(errs.Exists,

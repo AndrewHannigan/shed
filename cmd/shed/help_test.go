@@ -61,7 +61,7 @@ func TestHelpPathsConsistent(t *testing.T) {
 }
 
 // `shed help <command>` should resolve a command name to the topic that
-// documents it (e.g. add → library), not error out.
+// documents it (e.g. add → catalog), not error out.
 func TestHelpCommandAliases(t *testing.T) {
 	for _, cmd := range []string{"add", "rm", "ls", "repo", "new", "path"} {
 		out := captureStdout(t, func() { runShed("help", cmd) })

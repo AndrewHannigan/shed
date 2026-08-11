@@ -41,7 +41,7 @@ func newRootCmd() *cobra.Command {
 		// subcommand defines one, so this fires for every leaf. It runs before
 		// the command's own RunE, so an uninitialized install fails fast with a
 		// clear "run shed init" message instead of behaving like an empty
-		// library. Commands that must work pre-init are exempted (see initExempt).
+		// catalog. Commands that must work pre-init are exempted (see initExempt).
 		PersistentPreRunE: func(c *cobra.Command, _ []string) error {
 			if initExempt(c) || paths.Initialized() {
 				return nil

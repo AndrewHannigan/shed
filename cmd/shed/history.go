@@ -15,7 +15,7 @@ import (
 
 // recordedCommands are the command paths (relative to the root command) whose
 // successful runs are appended to the history log: the "working" commands that
-// change the library or workspaces. Everything else — read-only queries (ls,
+// change the catalog or workspaces. Everything else — read-only queries (ls,
 // status, workspace ls/path), `sync`, the `history` command itself, the hidden
 // internal commands, and a bare `shed` — is intentionally absent.
 var recordedCommands = map[string]bool{
@@ -53,7 +53,7 @@ func newHistoryCmd() *cobra.Command {
 		Use:   "history",
 		Short: "Show recent shed commands",
 		Long: `history prints the most recent shed commands that changed the
-library or workspaces (add, rm, prune, init, workspace new/rm), newest
+catalog or workspaces (add, rm, prune, init, workspace new/rm), newest
 last. Read-only queries and background syncs are not recorded.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

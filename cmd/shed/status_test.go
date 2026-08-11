@@ -17,7 +17,7 @@ import (
 // mkMeta creates a mirror's .git dir and writes its meta sidecar with one
 // catalog record under the repo's name. The repo name doubles as the mirror
 // key (the URL-derived host/owner/repo path) for these default-branch repos.
-// Requires an isolated HOME (t.Setenv) so it never touches the real library.
+// Requires an isolated HOME (t.Setenv) so it never touches the real catalog.
 func mkMeta(t *testing.T, name string, m mirror.CatalogStatus) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(paths.MirrorPath(name), ".git"), 0o755); err != nil {

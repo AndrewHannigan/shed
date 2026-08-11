@@ -18,7 +18,7 @@ import (
 // <shed-session-context> tags, carrying the guide as additionalContext.
 func TestPrintSessionContextClaudeEnvelope(t *testing.T) {
 	// Isolate from the real user config so the snapshot and the
-	// collision-detection both see an empty library.
+	// collision-detection both see an empty catalog.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	var buf bytes.Buffer
@@ -114,7 +114,7 @@ func TestPrintSessionContextUnknownAgent(t *testing.T) {
 
 // With a workspace present, the body appends the recent-workspace-repos
 // snapshot — naming the repo and its newest workspace's age — instead of
-// dumping the whole library.
+// dumping the whole catalog.
 func TestSessionContextBodyIncludesRecentWorkspaceRepos(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -184,7 +184,7 @@ func makeGitWorkspace(t *testing.T, path string) {
 	run("commit", "-q", "-m", "init")
 }
 
-// collisionWarning fires when the working directory's origin matches a library
+// collisionWarning fires when the working directory's origin matches a catalog
 // repo, regardless of URL protocol, and names the repo for `workspace new`.
 func TestCollisionWarning(t *testing.T) {
 	repos := []config.Repo{
@@ -192,7 +192,7 @@ func TestCollisionWarning(t *testing.T) {
 		{URL: "https://github.com/acme/widget"},
 	}
 
-	// https working-dir origin matches the ssh-form library entry.
+	// https working-dir origin matches the ssh-form catalog entry.
 	w := collisionWarning("/home/u/src/hello-world", "https://github.com/octocat/hello-world.git", repos)
 	for _, want := range []string{
 		"local checkout collision",
@@ -204,14 +204,14 @@ func TestCollisionWarning(t *testing.T) {
 		}
 	}
 
-	// A repo not in the library produces no warning.
+	// A repo not in the catalog produces no warning.
 	if w := collisionWarning("/home/u/src/other", "https://github.com/octocat/other", repos); w != "" {
 		t.Errorf("expected no warning for unlisted repo, got:\n%s", w)
 	}
 
-	// The workspace command uses the library's resolved (custom) name.
+	// The workspace command uses the catalog's resolved (custom) name.
 	named := []config.Repo{{URL: "https://github.com/octocat/hello-world", Name: "myrepo"}}
 	if w := collisionWarning("/x", "https://github.com/octocat/hello-world", named); !strings.Contains(w, "workspace new myrepo <branch>") {
-		t.Errorf("warning should use the resolved library name:\n%s", w)
+		t.Errorf("warning should use the resolved catalog name:\n%s", w)
 	}
 }
