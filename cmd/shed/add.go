@@ -33,6 +33,11 @@ a bare "owner/repo" or "owner" is expanded against github.com, so
 "shed add octocat/Hello-World" and "shed add octocat"
 both just work.
 
+The repo is probed before it is saved: one the host reports as nonexistent
+is rejected outright, so a typo can't become a dead entry that fails every
+sync. (Auth and network problems don't block the add — the entry is saved
+and the first sync reports them.)
+
 --track pins the checkout to a branch or tag instead of the default branch:
 a branch advances on every sync, a tag never changes. Several versions of one
 repo can be tracked side by side ("shed add python/cpython --track
@@ -97,12 +102,17 @@ func runRepoAddOne(url, overrideName, track string) error {
 	if err != nil {
 		return errs.Wrap(errs.Config, err)
 	}
-	// Preflight auth while the user is here interactively. If the chosen
-	// transport can't authenticate but the other one can, store the working
-	// URL instead — this is the common "shorthand expands to HTTPS but I only
-	// have SSH set up" case. The name is transport-independent, so swapping the
-	// URL never changes effectiveName below.
-	url = reachableURL(url)
+	// Preflight the URL while the user is here interactively: refuse a repo
+	// the host says doesn't exist (a typo must not become a dead config
+	// entry), and if the chosen transport can't authenticate but the other
+	// one can, store the working URL instead — the common "shorthand expands
+	// to HTTPS but I only have SSH set up" case. The name is
+	// transport-independent, so swapping the URL never changes effectiveName
+	// below.
+	url, err = preflightURL(url, gitx.Reachable)
+	if err != nil {
+		return err
+	}
 	effectiveName := defaultName
 	if overrideName != "" {
 		effectiveName = overrideName
@@ -222,34 +232,54 @@ func ownerEmptyHint(c *config.Config, ownerName string) string {
 		"  Remove it with `shed rm %s` if that's unexpected.\n", ownerName, ownerName)
 }
 
-// reachableURL returns a clone URL that authenticates with the user's current
-// setup, given the one they asked for. If url works as-is (the common case,
-// including public repos that need no auth) it is returned unchanged. If url
-// fails specifically on authentication and the other transport (SSH↔HTTPS)
-// works, the working URL is returned with a note. Otherwise url is returned
-// unchanged — add never blocks: the entry is saved regardless and the
-// subsequent sync reports any remaining problem with a protocol-aware fix.
-func reachableURL(url string) string {
+// preflightURL returns the clone URL to store for the repo the user asked
+// for, probing it (and, on failure, its SSH↔HTTPS counterpart) with probe —
+// gitx.Reachable in production, a stub in tests. If url works as-is (the
+// common case, including public repos that need no auth) it is returned
+// unchanged. On failure the outcome depends on what the probe says:
+//
+//   - Not found on either transport: refused with errs.NotFound, the repo
+//     counterpart of owner-add's existence check — a typo must not become a
+//     dead config entry that fails every sync. The host's "not found" is
+//     authoritative in a way auth and network failures are not.
+//   - Auth failure, but the other transport works: the working URL is
+//     returned with a note ("shorthand expands to HTTPS but I only have SSH
+//     set up"). The same swap applies when one transport says "not found"
+//     and the other works — GitHub hides private repos behind "not found",
+//     so HTTPS with the wrong account can 404 a repo that SSH can see.
+//   - Auth failure on both: url is returned unchanged with a warning — the
+//     repo may well exist, so the entry is saved and sync reports the
+//     remaining problem with a protocol-aware fix.
+//   - Anything else (network down, host unreachable): url is returned
+//     unchanged — transient trouble is no reason to block an add.
+func preflightURL(url string, probe func(string) error) (string, error) {
 	if gitx.RequireGit() != nil {
-		return url // no git to probe with; sync will report it.
+		return url, nil // no git to probe with; sync will report it.
 	}
-	err := gitx.Reachable(url)
+	err := probe(url)
 	if err == nil {
-		return url
+		return url, nil
 	}
-	// Only a credential failure is worth switching transports for. Network or
-	// not-found errors would fail the same way over either protocol.
-	if !isAuthError(strings.ToLower(err.Error())) {
-		return url
+	low := strings.ToLower(err.Error())
+	// Only auth and not-found failures are worth switching transports for; a
+	// network failure would fail the same way over either protocol.
+	authFail, notFound := isAuthError(low), looksGoneUpstream(low)
+	if authFail || notFound {
+		if alt := paths.AlternateProtocolURL(url); alt != "" && probe(alt) == nil {
+			fmt.Printf("note: %s did not work, but %s does — adding it over %s instead.\n",
+				url, alt, transportLabel(alt))
+			return alt, nil
+		}
 	}
-	if alt := paths.AlternateProtocolURL(url); alt != "" && gitx.Reachable(alt) == nil {
-		fmt.Printf("note: %s could not authenticate, but %s works — adding it over %s instead.\n",
-			url, alt, transportLabel(alt))
-		return alt
+	if notFound {
+		return "", errs.New(errs.NotFound,
+			"%s was not found upstream — check the spelling. (A private repo also reports \"not found\" until auth that can see it is set up.)", url)
 	}
-	fmt.Fprintf(os.Stderr, "warning: could not authenticate to %s.\n  %s\n  Adding it anyway; fix auth and run `shed sync`.\n",
-		url, authFixHint(url))
-	return url
+	if authFail {
+		fmt.Fprintf(os.Stderr, "warning: could not authenticate to %s.\n  %s\n  Adding it anyway; fix auth and run `shed sync`.\n",
+			url, authFixHint(url))
+	}
+	return url, nil
 }
 
 // transportLabel names the transport a URL uses, for human-facing notes.
