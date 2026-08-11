@@ -25,15 +25,14 @@ func TestPrintWelcomeTour(t *testing.T) {
 	// The script must actually walk the flow the tour promises, so a future
 	// edit can't silently drop a step.
 	for _, want := range []string{
-		"AskUserQuestion",                 // checkpoint pacing
-		"shed add <owner>",                // whole owner
-		"shed add",                        // add command
-		"psf/requests",                    // single-repo example
-		"read-only",                       // catalog is immutable
-		"shed workspace new",              // writable workspaces
-		"second workspace",                // multiple workspaces demo
-		"Do not open a PR",                // explain, don't ship
-		"typically run by the agent",      // workspace new is agent-driven
+		"AskUserQuestion",                      // checkpoint pacing
+		"Run the shed add command",             // step 1
+		"psf/requests",                         // single-repo example
+		"readonly",                             // catalog is immutable
+		"shed workspace new",                   // agent-driven workspaces
+		"second workspace",                     // multiple workspaces demo
+		"Don't open a PR",                      // explain, don't ship
+		"typically run by the agent",           // workspace new is agent-driven
 		"more background with less exposition", // real-world pacing
 	} {
 		if !strings.Contains(out, want) {
