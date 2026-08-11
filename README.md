@@ -6,8 +6,6 @@
 
 ![shed in action](docs/demo.gif)
 
-<sub>[▶ interactive version](https://asciinema.org/a/5E9wgYqZQ90r7klt?speed=2) — pause, scrub, copy text</sub>
-
 Shed keeps a catalog of read-only, always-current repo checkouts under `~/.shed/repos`, and hands agents cheap, disposable workspaces when they need to write. The catalog is read-only at the OS level and synced at the start of every agent session, so agents read and branch from fresh code and can't corrupt the reference copies. One Go binary, no daemon, no telemetry.
 
 ```text
