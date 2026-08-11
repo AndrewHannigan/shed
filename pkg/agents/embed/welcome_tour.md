@@ -1,196 +1,113 @@
 # shed welcome tour — instructions for the agent
 
-You are giving the user a short, live tour of `shed`. This document is the
-script. The user is watching, and **this is a conversation, not a lecture** —
-your job is to orient them, get their **real repos** into shed, and then show
-shed working on one of those repos.
+Provide a tour of shed.
 
-There are three steps (the first is plain talk, no commands) and a wrap-up.
-Don't rush through them.
+## Pacing (critical)
 
-## The most important rule: pause and wait
+Text you write between tool calls is **not** displayed to the user. Only your
+opening message, AskUserQuestion prompts, and your final message render.
 
-After each step, **stop and hand the conversation back to the user.** Briefly ask
-something like *"Make sense? Any questions, or should I keep going?"* — then
-**actually wait for their reply.** Do not run the next step until they answer.
+**Never narrate a step between tool calls** — the user will not see it.
 
-If they ask a question, answer it, then ask again whether they're ready to
-continue. The tour only moves forward when the user says so.
+Before each major step, pause with **AskUserQuestion**: state in the question
+text exactly which command you are about to run and why, and offer a "Continue"
+option alongside one alternative. Save all remaining commentary for the final
+recap message.
 
-## Assume zero context
+If a step fails (`gh` not authenticated, no network, permission errors you
+didn't expect), say so in the next user-visible message, explain what it would
+have shown, and offer a fallback — don't stall the tour on a broken prerequisite.
 
-Treat the user as a **complete newcomer** unless they show otherwise. They may
-not know what shed is, why it's on their machine, or that their coding agents —
-not they themselves — are its main users. Don't lean on a term the tour hasn't
-earned yet: "store", "workspace", and "sync" mean nothing until you've shown
-them.
+Run real commands. Never fabricate output.
 
-If at any point the user says they're lost, confused, or asks "what even is
-this?" — **do not repeat your last explanation in different words.** Back up
-and change tactics:
-
-- Ground shed in concrete facts they can see: `which shed` (it's an ordinary
-  CLI installed on their machine), `shed ls` (here's what it's managing right
-  now, including any workspaces past agent sessions created).
-- Re-explain in plainer terms: read-only copies for reading, disposable
-  writable clones for editing — that's the whole model.
-- Then ask what's still unclear, and only resume the tour when they say
-  they're ready.
-
-## A few more rules
-
-- **Run real commands, one at a time.** Show the command, run it, say in a
-  sentence or two what happened. Never fabricate output.
-- **Keep narration tight.** One or two plain-language points per step — not every
-  detail. Deeper mechanics (the shared per-upstream mirror, hardlinked objects,
-  the exact `chmod`) are **only worth explaining if the user asks.**
-- **This is their real code.** Every edit you make in step 3 must be one the
-  user asked for or approved first — no throwaway "test edit" commits, no junk
-  changes to a real repo, ever.
-- **If a step fails** (`gh` not authenticated, no network, a push rejected), say
-  so plainly, explain what it would have shown, and fall back where the script
-  offers a fallback — don't stall the tour on a broken prerequisite.
-
-Open by saying the tour takes a few minutes and they can stop or ask anything
-at any point. Then begin with step 1.
+Open with a short welcome: the tour takes a few minutes, they can stop or ask
+anything at any point. Then go straight to checkpoint 1.
 
 ---
 
-## Step 1 — What shed is (no commands yet)
+## Checkpoint 1 — Add a repo (`shed add`)
 
-Shed is a git repo and workspace management system for terminal agents. It
-has two parts:
+Ask the user whether they'd like to track:
 
-- **~/.shed/repos/** — the catalog: one pristine copy of each repo you care
-  about. It's **read-only** at the OS level and re-synced at the start of
-  every agent session — always current, impossible to scribble on. Agents
-  read and grep code directly here.
-- **~/.shed/workspaces/** — when an agent needs to *change* something, it
-  asks shed for a cheap, fresh, writable clone of its own.
+- **A GitHub owner** (such as themselves) — recommended if they have at least
+  one repo on GitHub. `shed add <owner>` discovers all their repos and keeps
+  discovering new ones on every sync.
+- **A specific repo** (e.g. `psf/requests`) — recommended if they have no repos
+  on GitHub.
 
-Reads happen in the catalog; writes happen in disposable workspaces.
+Fold this choice and the `shed add` explanation into the AskUserQuestion.
+Include a "Continue" option and one alternative (e.g. skip adding for now, or
+pick the other add mode).
 
-Make one thing explicit, because it surprises newcomers: **shed is a tool for
-your agents more than for you.** Agents open the workspaces and do the editing;
-you mostly just run `shed add` to put a repo in the catalog and `shed ls` to see
-what's there.
+If helpful, use `gh api user --jq .login` to suggest their personal owner when
+`gh` is authenticated.
 
-Optionally run `shed ls` to ground this in their actual machine — "here's your
-catalog right now." (An empty catalog is a fine answer; it leads straight into
-step 2.)
+When they continue, run the agreed `shed add` command, then `shed ls` to show
+the result.
 
-**→ Pause. Ask if that framing makes sense, and wait before continuing.**
+---
 
-## Step 2 — Put your real repos in the catalog
+## Checkpoint 2 — Prove the catalog is read-only
 
-Don't demo on a dummy repo — build the user's actual catalog, so the tour
-leaves them set up rather than just entertained. Ask:
+AskUserQuestion: you are about to attempt a write (e.g. `touch` or append to a
+file) under `~/.shed/repos/…` to demonstrate that the catalog is read-only —
+offer "Continue" and one alternative.
 
-> "Is there a GitHub org or owner you usually work out of? Or, failing that, a
-> repo or two you touch most often?"
+Run the attempt. Show the actual permission error.
 
-Guidance for that conversation:
+The reason it is read-only: the repo catalog stays fresh and pristine. The code
+is always up to date and can't be clobbered. Agents read here; all editing
+happens in workspaces.
 
-- **Prefer a whole owner (user or org) over a single repo.** `shed add <owner>`
-  tracks the owner: it discovers their repos automatically and keeps
-  discovering new ones on every sync — one command, whole catalog. If the user
-  works inside an org, that org is the best first add.
-- **Suggest their own personal owner as a starting point.** If `gh` is
-  authenticated you can look up their login with `gh api user --jq .login` and
-  offer it: "want me to add `<login>`, so your personal repos are all in the
-  catalog?"
-- **A single repo is a fine fallback.** If they'd rather start small — or owner
-  tracking isn't possible right now (it needs `gh` installed and
-  authenticated) — add individual repos instead: `shed add <owner>/<repo>`.
+---
 
-Then run what you agreed on:
+## Checkpoint 3 — First workspace (`shed workspace new`)
 
-```
-shed add <owner>          # a whole user or org
-shed add <owner>/<repo>   # or a single repo
-```
+AskUserQuestion: you are about to run `shed workspace new <owner>/<repo>
+<name>` to create a writable clone for editing — offer "Continue" and one
+alternative (e.g. pick a different repo or workspace name).
 
-and show the result:
+Run `shed workspace new`. Briefly note in the checkpoint reply or final recap
+that shed synced first, printed a path, and this is a normal writable clone
+whose origin is the real upstream.
 
-```
-shed ls
-```
+Demonstrate using shed from the workspace: explore the repo, or make a small
+illustrative change if appropriate — but **do not commit junk or open a PR**.
 
-Say briefly what happened: their repos were fetched into the **read-only**
-catalog under `~/.shed/repos/…`, and — if an owner was added — sync will pick
-up that owner's new repos automatically from now on.
+Emphasize (in the final recap) that **`shed workspace new` is typically run by
+the agent, not the user.**
 
-Now prove the catalog really is read-only, quickly, in one of *their* repos: try
-to `touch` or append to a file under `~/.shed/repos/…`. It **fails with a
-permission error** — show the user the actual error. One or two sentences on
-why: the store stays a pristine, always-current baseline that no agent can
-clobber or leave stranded on a half-finished branch. All editing happens
-somewhere else — which is step 3.
+---
 
-**→ Pause. Ask if they have questions, and wait before continuing.**
+## Checkpoint 4 — Second workspace (multiple workspaces)
 
-## Step 3 — A real change, in a real workspace
+AskUserQuestion: you are about to run `shed workspace new` again (same or
+another repo, different name) to show that one session can manage multiple
+isolated workspaces — offer "Continue" and one alternative.
 
-> "Now let's actually use it. When your agent needs to change something, it
-> asks shed for a workspace: an isolated, writable clone."
+Create the second workspace. **Do not open a PR.** Instead, explain in the
+final recap what you could do from there: edit independently, commit, push,
+open a PR — each workspace is its own clone on its own branch, so they don't
+collide.
 
-First, pick the work **with the user**:
+---
 
-- Ask which of the repos they just added they'd like to make a change in.
-- Ask whether there's a small, real change they've been meaning to make — a
-  typo, a README fix, a nagging TODO, a tiny cleanup. If nothing comes to
-  mind, take a quick look at the repo and **propose** something small and
-  genuinely useful — and get their OK before touching anything.
+## Final message — recap
 
-Then open the workspace, named after the change like a branch:
+In one message, recap what the tour showed:
 
-```
-shed workspace new <owner>/<repo> <change-name>
-```
+1. **Catalog** — repos added with `shed add`, read-only under `~/.shed/repos/…`,
+   kept current automatically.
+2. **Read-only demo** — why the catalog stays pristine.
+3. **Workspaces** — writable clones via `shed workspace new`; agents create
+   these, not the user.
+4. **Multiple workspaces** — isolated clones for parallel work; from there you'd
+   commit, push, and open PRs as usual.
 
-Say, briefly:
-- It synced the repo first, so the workspace starts from the **latest** code.
-- It printed the **path** to a writable clone. `cd` there, make the agreed
-  change, and commit it with a real commit message.
+Also mention:
 
-Land the isolation point in a sentence while you work: this workspace is its
-own clone on its own branch — the user could open five more on the same repo
-and none would see each other's edits. Workspaces are **isolated**, which is
-exactly what lets several agents (or one agent juggling tasks) work the same
-repo at once without colliding.
-
-Then offer to ship it:
-
-> "Want me to push this up and open a PR?"
-
-- **If yes:** run `git push -u origin <change-name>` and open the pull request
-  (e.g. with `gh pr create`). The workspace is an ordinary clone whose origin
-  is the real upstream, so this is just the normal flow — and the user walks
-  away from the tour with a real PR up.
-- **If no:** that's fine — say in a line that pushing works like any other
-  clone, whenever they're ready.
-
-**→ Pause. Ask if they have questions, and wait before continuing.**
-
-## Wrap-up — recap, what's next, tidy up
-
-Recap what the tour did, briefly — and note that none of it was throwaway:
-- **Their catalog is live** — their real repos are in it, read-only and
-  kept current automatically.
-- **A real change happened** — made in an isolated workspace, off the latest
-  code, and (if they said yes) pushed up as a PR.
-
-Then mention — in a line or two each, no need to run them — where to go next:
-- **Grow the catalog:** more `shed add`, any time — repos or whole owners.
-- **Let the agents take it from here:** their coding agents already know about
-  shed and will open workspaces themselves when asked to edit these repos.
-- **Tidy up later:** `shed prune` removes workspaces whose work has already
-  landed — so once the tour's PR merges, prune cleans it up.
-
-Tidying up is different from a dummy-repo demo: **the catalog stays** — it *is*
-the setup, that's the point. For the workspace: if a PR went up, suggest
-keeping the workspace until the PR lands (then `shed prune`). If the change
-was never pushed, ask whether they want to keep it or remove it with
-`shed workspace rm <change-name>` — leave that choice to them.
-
-Close by pointing them at `shed help` for anything they want to dig into.
+- **In practice**, shed interactions are more background with less exposition.
+  This tour was verbose for illustration.
+- **`shed workspace new` is typically run by the agent**, not the user.
+- **Next steps**: `shed ls` to see everything, `shed help` for more, `shed
+  workspace rm <name>` or `shed prune` to tidy up when done.

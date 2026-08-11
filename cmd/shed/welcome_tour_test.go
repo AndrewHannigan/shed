@@ -25,14 +25,16 @@ func TestPrintWelcomeTour(t *testing.T) {
 	// The script must actually walk the flow the tour promises, so a future
 	// edit can't silently drop a step.
 	for _, want := range []string{
-		"shed add <owner>",          // whole owner (the preferred first add)
-		"shed add <owner>/<repo>",   // single-repo fallback
-		"gh api user --jq .login",   // suggesting their own personal owner
-		"read-only",                 // store is immutable
-		"shed workspace new <owner>/<repo> <change-name>",
-		"git push -u origin <change-name>", // offer to ship the change
-		"pull request",                     // ...as a PR
-		"isolated",                         // the isolation payoff
+		"AskUserQuestion",                 // checkpoint pacing
+		"shed add <owner>",                // whole owner
+		"shed add",                        // add command
+		"psf/requests",                    // single-repo example
+		"read-only",                       // catalog is immutable
+		"shed workspace new",              // writable workspaces
+		"second workspace",                // multiple workspaces demo
+		"Do not open a PR",                // explain, don't ship
+		"typically run by the agent",      // workspace new is agent-driven
+		"more background with less exposition", // real-world pacing
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("tour script should mention %q", want)
