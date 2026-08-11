@@ -36,6 +36,7 @@ func newWorkspaceCmd() *cobra.Command {
 
 func newWorkspaceNewCmd() *cobra.Command {
 	var base string
+	var noSync bool
 	cmd := &cobra.Command{
 		Use:   "new <repo> <name>",
 		Short: "Create a workspace: a plain local clone off the repo's checkout",
@@ -54,6 +55,9 @@ If a branch named <name> exists on origin, checks it out. Otherwise creates
 it off the repo's tracked branch or tag (or --base). shed always attempts a
 sync first so the workspace forks from the freshest code; if that fails
 (offline, auth, upstream down) it warns and forks from the last synced state.
+--no-sync skips that refresh entirely and forks straight from the last
+synced state — faster, but the workspace may be behind upstream. It errors
+if the repo has never been synced.
 
 In a terminal, progress lines ("syncing <repo>...DONE", "Creating
 workspace: <path>") narrate the steps on stderr. When output is piped or captured,
@@ -61,14 +65,15 @@ the bare workspace path is printed on stdout, so 'cd "$(shed workspace new
 <repo> <name>)"' works.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWorkspaceNew(args[0], args[1], base)
+			return runWorkspaceNew(args[0], args[1], base, noSync)
 		},
 	}
 	cmd.Flags().StringVar(&base, "base", "", "branch or tag to fork from when <name> is new (default: the repo's track)")
+	cmd.Flags().BoolVar(&noSync, "no-sync", false, "skip the upstream sync and fork from the last synced state")
 	return cmd
 }
 
-func runWorkspaceNew(name, branch, base string) error {
+func runWorkspaceNew(name, branch, base string, noSync bool) error {
 	if err := gitx.RequireGit(); err != nil {
 		return errs.Wrap(errs.MissingDep, err)
 	}
@@ -124,43 +129,16 @@ func runWorkspaceNew(name, branch, base string) error {
 			branch, repos[0], branch)
 	}
 	// ALWAYS attempt a sync first (mirror fetch + catalog fast-forward) so the
-	// workspace forks from the freshest code. If that fails but a synced repo
-	// already exists, warn and fall back to the last synced state — graceful
-	// degradation, so `new` still works offline; only hard-fail when there is
-	// nothing on disk to fork from.
-	//
-	// A single repo refresh, so streaming git's progress meter can't
-	// interleave; show it when interactive (nil when output is piped — see
-	// isTerminal). Both modes end with one "syncing <repo>...DONE" (or
-	// FAILED) line: quiet mode prints the header up front and completes it in
-	// place, while interactive mode lets git's meter narrate first — a
-	// leading header would either be clobbered by the meter's \r redraws or
-	// need repeating — and states the labeled verdict after.
-	var progress io.Writer
-	if isTerminal(os.Stderr) {
-		progress = os.Stderr
-	} else {
-		fmt.Fprintf(os.Stderr, "syncing %s...", name)
-	}
-	res := syncSingle(syncTarget{name, repo.URL, repo.Track, repo.Git}, progress)
-	syncFailed := res.Status == "error" || res.Status == "gone"
-	verdict := "DONE"
-	if syncFailed {
-		verdict = "FAILED"
-	}
-	if progress != nil {
-		fmt.Fprintf(os.Stderr, "syncing %s...%s\n", name, verdict)
-	} else {
-		fmt.Fprintln(os.Stderr, verdict)
-	}
-	if syncFailed {
+	// workspace forks from the freshest code — unless --no-sync, which trades
+	// freshness for speed and forks from the last synced state as-is. Either
+	// way a checkout must exist on disk to fork from: --no-sync hard-fails on
+	// a never-synced repo, just as a failed sync does below.
+	if noSync {
 		if !catalog.Valid(name) {
-			if res.locked {
-				return errs.New(errs.Locked, "could not sync %s: %s", name, res.Error)
-			}
-			return errs.New(errs.Network, "could not sync %s: %s", name, res.Error)
+			return errs.New(errs.NotFound, "%s has never been synced; run `shed sync %s` (or drop --no-sync)", name, name)
 		}
-		fmt.Fprintf(os.Stderr, "warning: could not refresh %s (%s); using the last synced state\n", name, res.Error)
+	} else if err := syncForWorkspaceNew(name, repo); err != nil {
+		return err
 	}
 	src, err := workspaceSource(repo, name)
 	if err != nil {
@@ -189,6 +167,49 @@ func runWorkspaceNew(name, branch, base string) error {
 	// path is emitted only when stdout is being piped or captured.
 	if !isTerminal(os.Stdout) {
 		fmt.Println(path)
+	}
+	return nil
+}
+
+// syncForWorkspaceNew refreshes the repo (mirror fetch + catalog
+// fast-forward) before a workspace is created. If the sync fails but a synced
+// repo already exists, it warns and lets creation fall back to the last
+// synced state — graceful degradation, so `new` still works offline; it only
+// hard-fails when there is nothing on disk to fork from.
+//
+// A single repo refresh, so streaming git's progress meter can't
+// interleave; show it when interactive (nil when output is piped — see
+// isTerminal). Both modes end with one "syncing <repo>...DONE" (or
+// FAILED) line: quiet mode prints the header up front and completes it in
+// place, while interactive mode lets git's meter narrate first — a
+// leading header would either be clobbered by the meter's \r redraws or
+// need repeating — and states the labeled verdict after.
+func syncForWorkspaceNew(name string, repo *config.Repo) error {
+	var progress io.Writer
+	if isTerminal(os.Stderr) {
+		progress = os.Stderr
+	} else {
+		fmt.Fprintf(os.Stderr, "syncing %s...", name)
+	}
+	res := syncSingle(syncTarget{name, repo.URL, repo.Track, repo.Git}, progress)
+	syncFailed := res.Status == "error" || res.Status == "gone"
+	verdict := "DONE"
+	if syncFailed {
+		verdict = "FAILED"
+	}
+	if progress != nil {
+		fmt.Fprintf(os.Stderr, "syncing %s...%s\n", name, verdict)
+	} else {
+		fmt.Fprintln(os.Stderr, verdict)
+	}
+	if syncFailed {
+		if !catalog.Valid(name) {
+			if res.locked {
+				return errs.New(errs.Locked, "could not sync %s: %s", name, res.Error)
+			}
+			return errs.New(errs.Network, "could not sync %s: %s", name, res.Error)
+		}
+		fmt.Fprintf(os.Stderr, "warning: could not refresh %s (%s); using the last synced state\n", name, res.Error)
 	}
 	return nil
 }

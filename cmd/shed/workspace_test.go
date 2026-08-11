@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/AndrewHannigan/shed/pkg/config"
 	"github.com/AndrewHannigan/shed/pkg/errs"
+	"github.com/AndrewHannigan/shed/pkg/gitx"
 	"github.com/AndrewHannigan/shed/pkg/paths"
 	"github.com/AndrewHannigan/shed/pkg/workspace"
 )
@@ -164,5 +166,84 @@ func TestRunWorkspaceRmManyDeduplicates(t *testing.T) {
 	})
 	if workspace.Exists(repo, "a") {
 		t.Errorf("workspace a should be removed")
+	}
+}
+
+// `workspace new --no-sync` needs a synced checkout to fork from; on a repo
+// that has never been synced it fails fast with a pointer to `shed sync`,
+// never touching the network.
+func TestRunWorkspaceNewNoSyncNeverSynced(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	tempHome(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	saveConfig(t, &config.Config{
+		Repos: []config.Repo{{URL: "https://github.com/acme/widget"}},
+	})
+
+	err := runWorkspaceNew("acme/widget", "feat", "", true)
+	var c *errs.Coded
+	if !errors.As(err, &c) || c.Code != errs.NotFound {
+		t.Fatalf("runWorkspaceNew --no-sync on never-synced repo = %v, want errs.NotFound", err)
+	}
+	if !strings.Contains(err.Error(), "never been synced") {
+		t.Errorf("error should say the repo was never synced, got: %v", err)
+	}
+}
+
+// `workspace new --no-sync` forks from the last synced state without
+// refreshing: a commit added upstream after the sync must not appear in the
+// workspace, where a syncing `new` would have picked it up.
+func TestRunWorkspaceNewNoSyncSkipsRefresh(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	tempHome(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	root := t.TempDir()
+	up := filepath.Join(root, "upstream")
+	gitRun(t, root, "init", "-q", "-b", "main", up)
+	if err := os.WriteFile(filepath.Join(up, "a.txt"), []byte("1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, up, "add", "a.txt")
+	gitRun(t, up, "commit", "-q", "-m", "first")
+
+	const key = "github.com/acme/widget"
+	job := mirrorJob{key: key, url: up, repos: []syncTarget{{name: key, url: up}}}
+	if r := syncMirrorJob(job, nil, 0, nil)[0]; r.Status != "ok" {
+		t.Fatalf("initial sync should succeed: %+v", r)
+	}
+	synced, err := gitx.Output(paths.CatalogPath(key), "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("read synced HEAD: %v", err)
+	}
+
+	// Upstream moves on after the sync.
+	if err := os.WriteFile(filepath.Join(up, "a.txt"), []byte("2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, up, "commit", "-aqm", "second")
+
+	// The config URL is never contacted with --no-sync; only the already-synced
+	// mirror (keyed github.com/acme/widget) is used.
+	saveConfig(t, &config.Config{
+		Repos: []config.Repo{{URL: "https://github.com/acme/widget"}},
+	})
+	captureStdout(t, func() {
+		if err := runWorkspaceNew(key, "feat", "", true); err != nil {
+			t.Fatalf("runWorkspaceNew --no-sync: %v", err)
+		}
+	})
+
+	head, err := gitx.Output(workspace.PathFor(key, "feat"), "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("read workspace HEAD: %v", err)
+	}
+	if strings.TrimSpace(head) != strings.TrimSpace(synced) {
+		t.Errorf("--no-sync workspace HEAD = %s, want the last synced commit %s", head, synced)
 	}
 }
