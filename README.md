@@ -21,7 +21,6 @@ Agents run all of this themselves. `shed init` wires up the integration once; af
 - Repos sync in the background at session start and again right before each workspace is created, so an agent never branches off stale code by accident.
 - `shed workspace new` is purely local (objects hardlink from a shared per-upstream mirror), so creation takes seconds and works offline. The result is an ordinary git repo with `origin` pointing at the real upstream; push as if you'd cloned it from there.
 - `shed prune` deletes workspaces whose work already landed (merged PR, or merged into the default branch), refuses dirty or unpushed work, and does all git maintenance. You never run `gc`.
-- `shed resume <workspace>` relaunches the agent session that created a workspace — same agent, same session id, same directory.
 - Track several versions of one repo: `cpython`, `cpython@3.12`, and `cpython@v3.12.3` sit side by side and share one mirror.
 
 ## Install
@@ -54,7 +53,7 @@ shed add python/cpython --track 3.12
 
 Division of labor: you (or your agent) curate the catalog with `shed add` / `shed rm`. The `workspace` commands are best left to the agent — it creates a workspace the moment it needs to make a change and tears it down when done. Pre-creating workspaces by hand just risks the agent branching off a stale base, which is what shed exists to prevent.
 
-When branches land, `shed prune` reclaims the workspaces they leave behind. To get back into one, `shed resume <workspace>` relaunches the agent session that created it, in its original working directory.
+When branches land, `shed prune` reclaims the workspaces they leave behind.
 
 ## How it works
 
@@ -103,7 +102,6 @@ Those arguments apply only to the writable tier. The read-only repos never branc
 | `shed workspace rm <name>…` | Delete workspaces (refuses dirty/unpushed work without `--force`) |
 | `shed path <name>` | Print the absolute path of a repo or workspace (for `cd "$(shed path <name>)"`) |
 | `shed prune` | Delete workspaces whose work has landed; run mirror gc and orphan cleanup |
-| `shed resume <name>` | Reopen the agent session that created a workspace |
 | `shed history` | Show recent shed commands |
 | `shed help [topic]` | Long-form docs on a command or concept |
 
