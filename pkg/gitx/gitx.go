@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // ErrGitMissing is returned by RequireGit when the git binary is not on PATH.
@@ -92,11 +93,38 @@ func RunProgress(progress io.Writer, extraEnv []string, args ...string) ([]byte,
 	}
 	// Tee stderr to the caller (the terminal) and a buffer: the user watches it
 	// scroll by, and a copy is still on hand for the error message if it fails.
-	var buf bytes.Buffer
+	// The buffer is shared between stdout and stderr, which exec copies on
+	// separate goroutines, so it must be the locked kind: a plain bytes.Buffer
+	// here silently LOSES the captured stderr — io.Copy hits Buffer.ReadFrom on
+	// the stdout side, which at EOF truncates the buffer back to its pre-read
+	// length, wiping whatever stderr wrote while stdout sat empty. A failed
+	// clone then reports "(output: )" with git's actual message gone.
+	var buf lockedBuffer
 	cmd.Stdout = &buf
 	cmd.Stderr = io.MultiWriter(progress, &buf)
 	err := cmd.Run()
 	return buf.Bytes(), err
+}
+
+// lockedBuffer is a write-only, mutex-guarded byte buffer for collecting a
+// child process's stdout and stderr from concurrent goroutines. It
+// deliberately implements ONLY Write: exposing ReadFrom would let io.Copy
+// bypass the lock via the bytes.Buffer fast path (see RunProgress).
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Bytes()
 }
 
 // RefExists reports whether the exact ref (e.g. "refs/remotes/origin/main")
