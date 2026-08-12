@@ -6,7 +6,7 @@
 
 ![shed in action](docs/demo.gif)
 
-<sub>[▶ interactive version](https://asciinema.org/a/foFbMWOvERZpmPhS?speed=2) — pause, scrub, copy text</sub>
+<sub>[▶ interactive version](https://asciinema.org/a/r3yPwD6Iz6RqMk7S?speed=2) — pause, scrub, copy text</sub>
 
 **shed** gives your agents a read-only, always-current catalog for reads and cheap disposable workspaces for writes:
 
