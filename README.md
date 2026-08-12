@@ -49,6 +49,7 @@ shed add python
 shed add python/cpython --track 3.12
 
 # now run claude, cursor-agent, or opencode — your agent knows how to use it
+echo "explain shed" | claude
 ```
 
 Division of labor: you (or your agent) curate the catalog with `shed add` / `shed rm`. The `workspace` commands are best left to the agent — it creates a workspace the moment it needs to make a change and tears it down when done.
