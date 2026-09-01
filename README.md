@@ -52,17 +52,9 @@ shed add python/cpython --track 3.12
 echo "explain shed" | claude
 ```
 
-Division of labor: you (or your agent) curate the catalog with `shed add` / `shed rm`. The `workspace` commands are best left to the agent — it creates a workspace the moment it needs to make a change and tears it down when done.
+You (or your agent) curate the catalog with `shed add` / `shed rm`. The `workspace` commands are best left to the agent — it creates a workspace the moment it needs to make a change and tears it down when done.
 
 When PRs are merged, `shed prune` reclaims the workspaces they leave behind.
-
-## Why plain clones for workspaces, not `git worktree`
-
-Repos *are* worktrees — of the mirror, which is what makes N versions of a repo cost one copy of history. Workspaces deliberately are not.
-
-Worktrees impose a workflow: all trees of a repo pool one `refs/heads/*` namespace (and by default one `.git/config`), and git polices the sharing — you can't check out or delete a branch another worktree holds. That's fine for a single careful human; it's coordination overhead for agents working in parallel. A clone owns its refs, reflogs, config, index, and `HEAD` outright. An agent can branch freely, rewrite history, retarget `origin`, or change `user.email`, and nothing it does touches another workspace. Teardown is `rm -rf` — no registration bookkeeping.
-
-Those arguments apply only to the writable tier. The read-only repos never branch, never push, and have a single owner (shed), so they get worktrees; workspaces get clones.
 
 ## Commands
 
@@ -168,6 +160,14 @@ Shed does not manage credentials. Every git operation defers to whatever `git cl
 GitHub shorthand (`shed add owner/repo`) expands to HTTPS. If HTTPS can't authenticate but SSH can — the common "I only have an `ssh-agent` set up" case — `shed add` detects this during a preflight check and stores the working SSH URL instead, telling you it did. To force a transport, pass a full URL.
 
 Sync failures — including a repo's very first clone — are recorded and surfaced, never silently dropped: `shed status` reports them with a transport-aware fix, and the session-start hook warns your agent that the store is stale.
+
+## Why plain clones for workspaces, not `git worktree`
+
+Repos *are* worktrees — of the mirror, which is what makes N versions of a repo cost one copy of history. Workspaces deliberately are not.
+
+Worktrees impose a workflow: all trees of a repo pool one `refs/heads/*` namespace (and by default one `.git/config`), and git polices the sharing — you can't check out or delete a branch another worktree holds. That's fine for a single careful human; it's coordination overhead for agents working in parallel. A clone owns its refs, reflogs, config, index, and `HEAD` outright. An agent can branch freely, rewrite history, retarget `origin`, or change `user.email`, and nothing it does touches another workspace. Teardown is `rm -rf` — no registration bookkeeping.
+
+Those arguments apply only to the writable tier. The read-only repos never branch, never push, and have a single owner (shed), so they get worktrees; workspaces get clones.
 
 ## Documentation
 
